@@ -28,8 +28,13 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 app = FastAPI(title="PhotoFeed AI", version="0.5")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://<your-frontend>.vercel.app"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/health")
