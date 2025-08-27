@@ -95,7 +95,7 @@
               <label class="text-sm text-neutral-300">Password</label>
               <input v-model="password" class="input" type="password" placeholder="Enter your password" :autocomplete="mode==='login' ? 'current-password' : 'new-password'" required />
               <p v-if="mode==='login'" class="text-xs text-neutral-400">
-                Tip: seeded users use password <span class="font-semibold text-neutral-200">demo</span>
+                Tip: Seeded users use password <span class="font-semibold text-neutral-200">demo</span>
               </p>
             </div>
   
