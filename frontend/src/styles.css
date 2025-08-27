@@ -1,0 +1,5 @@
+@import "tailwindcss";
+
+.pb-mobile-nav {
+  padding-bottom: calc(84px + env(safe-area-inset-bottom));
+}
