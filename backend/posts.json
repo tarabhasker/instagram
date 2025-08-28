@@ -328,6 +328,23 @@
       "saved": [],
       "bio": "",
       "avatarUrl": "https://i.pravatar.cc/300?u=jessyhql"
+    },
+    {
+      "id": "u_e6o57lx",
+      "firstName": "testing",
+      "lastName": "123",
+      "username": "test123",
+      "dob": "",
+      "email": "test@gmail.com",
+      "password": "6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090",
+      "dateRegistered": "2025-08-28T05:33:44.243Z",
+      "followers": [],
+      "following": [],
+      "posts": [],
+      "liked": [],
+      "saved": [],
+      "bio": "",
+      "avatarUrl": "https://i.pravatar.cc/300?u=test123"
     }
   ],
   "posts": [

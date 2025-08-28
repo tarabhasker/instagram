@@ -336,16 +336,15 @@ const recipients = ref(new Set())
 
 /* helpers */
 const fetchJSON = async (path, options = {}) => {
-  const API_BASE = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '')
-  .replace(/\/+$/, '');
+  const url = API_BASE ? `${API_BASE}${path}` : path;  // build the URL
   const r = await fetch(url, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
-  })
+  });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+};
 
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
-  return r.json()
-}
 const fetchUser = async (username) => {
   if (!username) return null
   if (profileCache.value.has(username)) return profileCache.value.get(username)
