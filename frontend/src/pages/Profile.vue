@@ -319,7 +319,10 @@ import BeamsBackground from '@/components/BeamsBackground.vue'
 const route = useRoute()
 const router = useRouter()
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5050'
+const API_BASE = (
+  import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? 'http://localhost:5050' : '')
+).replace(/\/+$/, '')
+
 const fallbackAvatar = 'https://img.freepik.com/premium-vector/user-icon-round-grey-icon_1076610-44912.jpg?w=360'
 
 /* ----- auth / self ----- */
@@ -401,8 +404,12 @@ function shortDate (p) {
 function formatJoined (iso) { try { return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long' }) } catch { return '' } }
 
 /* ---- Data fetching ---- */
-async function fetchJSON (path, opts) {
-  const r = await fetch(`${API_BASE}${path}`, opts)
+async function fetchJSON (path, opts = {}) {
+  const url = API_BASE ? `${API_BASE}${path}` : path   // use relative when no base
+  const r = await fetch(url, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  })
   const data = await r.json().catch(() => ({}))
   if (!r.ok) throw new Error(data?.error?.message || `${r.status} ${r.statusText}`)
   return data

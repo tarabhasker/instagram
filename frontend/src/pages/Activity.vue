@@ -121,7 +121,8 @@ const router = useRouter()
 const route = useRoute()
 const auth = useAuth()
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5050'
+const API_BASE = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '')
+   .replace(/\/+$/, '')
 const fallbackAvatar = 'https://i.pravatar.cc/300?img=47'
 
 /* who am I? */
@@ -156,7 +157,8 @@ const authHeaders = computed(() => {
 })
 
 const fetchJSON = async (path, options = {}) => {
-  const r = await fetch(`${API_BASE}${path}`, {
+  const url = API_BASE ? `${API_BASE}${path}` : path; // if no base, use relative /api/...
+  const r = await fetch(url, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}), ...authHeaders.value }
   })

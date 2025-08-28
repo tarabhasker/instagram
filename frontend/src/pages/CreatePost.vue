@@ -161,7 +161,8 @@ import { useRouter, RouterLink } from 'vue-router'
 const router = useRouter()
 
 // Prefer VITE_API_BASE, fallback to older var name, then localhost
-const API = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:5050'
+const API_BASE = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '')
+  .replace(/\/+$/, '');
 
 // -------- state --------
 const imageUrl = ref('')
@@ -192,7 +193,7 @@ const suggest = async () => {
   if (!imageUrl.value || aiLoading.value) return
   aiLoading.value = true
   try {
-    const r = await fetch(`${API}/api/ai/suggest`, {
+    await fetch(`${API_BASE}/api/ai/suggest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ imageUrl: imageUrl.value, prompt: vibe.value || null }),
@@ -242,7 +243,7 @@ const submit = async () => {
       labels: tags
     }
 
-    const r = await fetch(`${API}/api/posts`, {
+    const r = await fetch(`${API_BASE}/api/posts`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

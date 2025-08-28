@@ -307,7 +307,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5050'
+const API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:5050').replace(/\/+$/, '')
 const fallbackAvatar = 'https://i.pravatar.cc/300?img=47'
 
 /* route */
@@ -335,8 +335,13 @@ const sheet = ref({ open: false, type: null })
 const recipients = ref(new Set())
 
 /* helpers */
-const fetchJSON = async (path, options) => {
-  const r = await fetch(`${API_BASE}${path}`, options)
+const fetchJSON = async (path, options = {}) => {
+  const url = API_BASE ? `${API_BASE}${path}` : path   // relative when no base (Vercel rewrites)
+  const r = await fetch(url, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  })
+
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
   return r.json()
 }
