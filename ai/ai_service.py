@@ -1,12 +1,16 @@
 # ai_service.py
 # FastAPI service: lightweight CLIP analysis + LLM captions with safe fallbacks.
+# - Returns JSON for *all* failures (no HTML 500 pages)
+# - Faster, robust image fetch (timeout + UA)
+# - Root "/" route for quick sanity checks on Render
 
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Tuple, Dict
-from PIL import Image
-import requests, io, os, re, json, math
+from PIL import Image, UnidentifiedImageError
+import requests, io, os, re, json
 import torch
 
 # -------------------- Env / Config --------------------
@@ -22,12 +26,13 @@ OPENROUTER_BASE    = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 
 # --- CLIP backend (lightweight) ---
-# RN50 is smallest; ViT-B/32 is also fairly light. Both work on CPU.
-CLIP_MODEL_NAME   = os.getenv("CLIP_MODEL_NAME", "ViT-B-32")   # or "RN50"
-CLIP_PRETRAINED   = os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k")  # for RN50: "openai"
+# Tip: For smallest CPU footprint on free tiers, set:
+#   CLIP_MODEL_NAME=RN50 and CLIP_PRETRAINED=openai
+CLIP_MODEL_NAME   = os.getenv("CLIP_MODEL_NAME", "ViT-B-32")  # or "RN50"
+CLIP_PRETRAINED   = os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k")  # RN50 → "openai"
 CLIP_DEVICE       = "cuda" if (os.getenv("USE_CUDA", "false").lower() == "true" and torch.cuda.is_available()) else "cpu"
 TORCH_THREADS     = int(os.getenv("TORCH_THREADS", "1"))
-USE_CAPTION_RERANK = os.getenv("RERANK_CAPTIONS", "false").lower() == "true"  # keep False for extra-light mode
+USE_CAPTION_RERANK = os.getenv("RERANK_CAPTIONS", "false").lower() == "true"
 
 torch.set_num_threads(TORCH_THREADS)
 torch.set_grad_enabled(False)
@@ -42,8 +47,16 @@ app.add_middleware(
     allow_origin_regex=r"https://.*\.vercel\.app$",
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=False,   # simple fetch from browser
+    allow_credentials=False,
 )
+
+@app.get("/")
+def root():
+    return {
+        "ok": True,
+        "service": "PhotoFeed AI",
+        "endpoints": ["/health", "/api/ai/analyze", "/api/ai/suggest"],
+    }
 
 @app.get("/health")
 def health():
@@ -65,7 +78,6 @@ def health():
 # -------------------- CLIP (open_clip) --------------------
 import open_clip
 
-# Create model + preprocess; keep CPU by default
 _clip_model, _clip_preprocess = None, None
 _clip_tokenizer = None
 
@@ -98,51 +110,39 @@ SCENE_LABELS = [
 _text_bank: Dict[str, torch.Tensor] = {}
 
 def _text_features(labels: List[str], template: str) -> torch.Tensor:
-    """
-    Return a (len(labels), d) tensor of normalized text features, cached per template+labels key.
-    """
     key = f"{template}||{'|'.join(labels)}"
     if key in _text_bank:
         return _text_bank[key]
     _init_clip()
     texts = [template.format(l) for l in labels]
-    toks = _clip_tokenizer(texts)
-    toks = toks.to(CLIP_DEVICE)
+    toks = _clip_tokenizer(texts).to(CLIP_DEVICE)
     with torch.no_grad():
         txt = _clip_model.encode_text(toks)
         txt = txt / txt.norm(dim=-1, keepdim=True)
     if CLIP_DEVICE == "cuda":
-        txt = txt.float()  # store as fp32 CPU to save VRAM
+        txt = txt.float()
     txt = txt.cpu()
     _text_bank[key] = txt
     return txt
 
 def _image_features(img: Image.Image) -> torch.Tensor:
-    """
-    Encode an image; returns 1xd normalized tensor on CPU.
-    """
     _init_clip()
-    # Preprocess -> tensor
     t = _clip_preprocess(img).unsqueeze(0)
     if CLIP_DEVICE == "cuda":
         t = t.half().to(CLIP_DEVICE)
     else:
         t = t.to(CLIP_DEVICE)
-
     with torch.no_grad():
         feat = _clip_model.encode_image(t)
         feat = feat / feat.norm(dim=-1, keepdim=True)
     if CLIP_DEVICE == "cuda":
         feat = feat.float()
-    return feat.cpu()  # keep CPU tensors onward
+    return feat.cpu()
 
 def _rank_labels(img: Image.Image, labels: List[str], template="a photo of {}") -> List[Tuple[str, float]]:
-    """
-    Cosine similarity image vs label texts; returns [(label, score)] sorted desc.
-    """
     if not labels:
         return []
-    img_f = _image_features(img)  # (1, d)
+    img_f = _image_features(img)     # (1, d)
     txt_f = _text_features(labels, template)  # (n, d)
     sims = (img_f @ txt_f.T).squeeze(0).numpy().tolist()
     pairs = list(zip(labels, sims))
@@ -185,10 +185,6 @@ def fallback_hashtags(prompt: Optional[str], grounding: str) -> List[str]:
 
 # -------------------- LLM call (OpenRouter) --------------------
 def call_llm_captions(grounding: str, vibe: Optional[str], objects=None, scenes=None, n_variants: int = 3) -> dict:
-    """
-    Returns {"captions": [...], "hashtags": [...]}
-    Robust to missing key or API errors.
-    """
     tone = sanitize_vibe(vibe or "")
 
     # No key → deterministic local fallback
@@ -248,9 +244,20 @@ def call_llm_captions(grounding: str, vibe: Optional[str], objects=None, scenes=
 
 # -------------------- IO helpers --------------------
 def fetch_image(url: str) -> Image.Image:
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+    """
+    Robust image fetch: short timeout, UA header, JSON-friendly errors via caller.
+    """
+    try:
+        r = requests.get(
+            url,
+            timeout=12,  # fail fast; upstream proxy can retry
+            headers={"User-Agent": "Flashgram-AI/1.0 (+https://example.com)"},
+        )
+        r.raise_for_status()
+        img = Image.open(io.BytesIO(r.content)).convert("RGB")
+    except (requests.RequestException, UnidentifiedImageError) as e:
+        raise RuntimeError(f"image fetch failed: {e}")
+
     # Small memory trick: limit max side to 640 before CLIP preprocess
     max_side = 640
     w, h = img.size
@@ -275,9 +282,15 @@ api = APIRouter(prefix="/api")
 
 @api.post("/ai/analyze")
 def analyze(req: AnalyzeReq):
-    img = fetch_image(req.imageUrl)
-    k = max(1, min(8, req.top_k))
+    # Always respond JSON, even on errors
+    try:
+        img = fetch_image(req.imageUrl)
+    except Exception as e:
+        return JSONResponse(status_code=422, content={
+            "error": {"code": "IMAGE_FETCH_FAILED", "message": str(e)}
+        })
 
+    k = max(1, min(8, req.top_k))
     objs = _rank_labels(img, OBJECT_LABELS, template="a photo of {}")[:k]
     scns = _rank_labels(img, SCENE_LABELS, template="a {} scene")[:k]
 
@@ -288,8 +301,14 @@ def analyze(req: AnalyzeReq):
 
 @api.post("/ai/suggest")
 def suggest(req: SuggestReq):
-    # 1) Fetch + analyze (lightweight CLIP)
-    img = fetch_image(req.imageUrl)
+    # 1) Fetch + analyze
+    try:
+        img = fetch_image(req.imageUrl)
+    except Exception as e:
+        return JSONResponse(status_code=422, content={
+            "error": {"code": "IMAGE_FETCH_FAILED", "message": str(e)}
+        })
+
     k = max(1, min(8, req.top_k))
     obj_pairs = _rank_labels(img, OBJECT_LABELS, template="a photo of {}")[:k]
     scn_pairs = _rank_labels(img, SCENE_LABELS, template="a {} scene")[:k]
@@ -298,7 +317,7 @@ def suggest(req: SuggestReq):
         "scenes":  [{"label": l, "score": float(s)} for l, s in scn_pairs],
     }
 
-    # 2) Neutral grounding from labels (no people words in text)
+    # 2) Neutral grounding from labels (avoid people words)
     PERSON_WORDS = {"man","woman","boy","girl","person","people","couple"}
     core_objs = [l for (l, _) in obj_pairs if l not in PERSON_WORDS]
     scene = scn_pairs[0][0] if scn_pairs else None
