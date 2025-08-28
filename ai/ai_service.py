@@ -17,7 +17,7 @@ except Exception:
     pass
 
 # --- OpenRouter (LLM) ---
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE    = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 

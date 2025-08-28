@@ -1,16 +1,15 @@
-# --- API
+# API
 fastapi==0.112.2
 uvicorn[standard]==0.30.1
 
-# --- Utils
+# Utils
 requests>=2.32.0
 pillow>=10.3.0
 python-dotenv>=1.0.1
 
-# --- CLIP
-open_clip_torch>=2.24.0
+# CLIP
+open_clip_torch==3.1.0
 
-# --- PyTorch CPU wheels (smallest & works on most hosts)
+# PyTorch CPU wheels
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.3.1+cpu
-torchvision==0.18.1+cpu
