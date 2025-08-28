@@ -568,14 +568,14 @@ const copyLink = async () => {
 
 const goToPost = () => {
   if (!sheet.value.post) return
-  location.href = `/p/${sheet.value.post.id}`
+  router.push({ path: `/p/${sheet.value.post.id}` })
 }
 
 const closeSheet = () => { sheet.value = { open: false, type: null, post: null } }
 
 /* ------- misc ------- */
 const findSimilar = (post) => {
-  window.location.href = `/explore?similar=${encodeURIComponent(post.id)}`
+  router.push({ path: '/explore', query: { similar: post.id } })
 }
 
 const shortTime = (iso) => {

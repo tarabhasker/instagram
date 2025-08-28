@@ -21,7 +21,6 @@ const router = createRouter({
     { path: '/',         name: 'feed',     component: Feed },
     { path: '/explore',  name: 'explore',  component: Explore },
     { path: '/p/:id',    name: 'post',     component: PostDetail, props: true },
-
     // Auth
     { path: '/auth',     name: 'auth',     component: Auth, meta: { guestOnly: true } },
     {

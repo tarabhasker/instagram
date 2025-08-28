@@ -1,7 +1,8 @@
 {
     "rewrites": [
       { "source": "/api/ai/:path*", "destination": "https://tara-takehome-ai.onrender.com/api/ai/:path*" },
-      { "source": "/api/:path*",    "destination": "https://tara-takehome.onrender.com/api/:path*" }
+      { "source": "/api/:path*",    "destination": "https://tara-takehome.onrender.com/api/:path*" },
+      { "source": "/(.*)", "destination": "/index.html" }
     ]
   }
   
