@@ -468,7 +468,7 @@ app.post('/api/ai/suggest', async (req, res) => {
   }
   try {
     const AI_BASE = process.env.AI_URL || 'http://localhost:8001'
-    const r = await fetch(`${AI_BASE}/ai/suggest`, {
+    const r = await fetch(`${AI_BASE}/api/ai/suggest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ imageUrl, prompt: prompt || null }),
@@ -476,6 +476,7 @@ app.post('/api/ai/suggest', async (req, res) => {
     const data = await r.json()
     res.status(r.ok ? 200 : r.status).json(data)
   } catch (e) {
+    console.error('AI proxy failed', e)
     res.status(502).json({ error: { code: 'AI_UNAVAILABLE', message: 'AI service unreachable' } })
   }
 })

@@ -336,7 +336,8 @@ const recipients = ref(new Set())
 
 /* helpers */
 const fetchJSON = async (path, options = {}) => {
-  const url = API_BASE ? `${API_BASE}${path}` : path   // relative when no base (Vercel rewrites)
+  const API_BASE = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '')
+  .replace(/\/+$/, '');
   const r = await fetch(url, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }

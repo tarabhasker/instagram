@@ -193,7 +193,7 @@ const suggest = async () => {
   if (!imageUrl.value || aiLoading.value) return
   aiLoading.value = true
   try {
-    await fetch(`${API_BASE}/api/ai/suggest`, {
+    const r = await fetch(`${API_BASE}/api/ai/suggest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ imageUrl: imageUrl.value, prompt: vibe.value || null }),
