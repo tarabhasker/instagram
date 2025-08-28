@@ -1,7 +1,12 @@
 // src/composables/useAuth.js
 import { ref, computed } from 'vue'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5050'
+// Use both vars, dev-safe localhost only if truly on localhost
+const API_BASE = (
+  import.meta.env.VITE_API_BASE ||
+  import.meta.env.VITE_API_URL ||
+  (location.hostname === 'localhost' ? 'http://localhost:3000' : '')
+).replace(/\/+$/, '')
 
 // ---- state ----
 const user = ref(loadUser())
@@ -19,9 +24,8 @@ function persistUser (u) {
 const isAuthed = computed(() => !!user.value)
 
 // ---- actions ----
-async function login (username, _password) {
+async function login (username) {
   if (!username) throw new Error('Username required')
-  // Demo backend: verify the user exists via public endpoint
   const r = await fetch(`${API_BASE}/api/users/${encodeURIComponent(username)}`)
   if (!r.ok) throw new Error('User not found')
   const u = await r.json()
