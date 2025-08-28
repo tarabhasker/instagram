@@ -341,8 +341,13 @@
       "followers": [],
       "following": [],
       "posts": [],
-      "liked": [],
-      "saved": [],
+      "liked": [
+        "p_ubigtx0",
+        "p_rt2"
+      ],
+      "saved": [
+        "p_ubigtx0"
+      ],
       "bio": "",
       "avatarUrl": "https://i.pravatar.cc/300?u=test123"
     }
@@ -363,7 +368,8 @@
         "alice89",
         "bellaswan",
         "tarabhasker",
-        "silliew"
+        "silliew",
+        "test123"
       ],
       "createdAt": "2025-08-22T08:30:29.273Z",
       "likeEvents": [
@@ -402,6 +408,12 @@
           "type": "like",
           "username": "silliew",
           "date": "2025-08-27T13:29:10.115Z"
+        },
+        {
+          "id": "e_y4oe6xo",
+          "type": "like",
+          "username": "test123",
+          "date": "2025-08-28T05:40:07.597Z"
         }
       ],
       "comments": [
@@ -416,11 +428,18 @@
           "username": "silliew",
           "content": "love this xo",
           "date": "2025-08-27T13:29:22.868Z"
+        },
+        {
+          "id": "c_gopi3ek",
+          "username": "test123",
+          "content": "nice!",
+          "date": "2025-08-28T05:40:16.096Z"
         }
       ],
       "saves": [
         "bellaswan",
-        "silliew"
+        "silliew",
+        "test123"
       ],
       "saveEvents": [
         {
@@ -434,6 +453,12 @@
           "type": "save",
           "username": "silliew",
           "date": "2025-08-27T13:29:27.221Z"
+        },
+        {
+          "id": "e_q00tnpw",
+          "type": "save",
+          "username": "test123",
+          "date": "2025-08-28T05:40:34.599Z"
         }
       ]
     },
@@ -849,8 +874,30 @@
         "friends",
         "outdoors"
       ],
-      "likes": 95,
-      "createdAt": "2025-08-25T10:04:00.000Z"
+      "likes": [
+        "test123"
+      ],
+      "createdAt": "2025-08-25T10:04:00.000Z",
+      "likeEvents": [
+        {
+          "id": "e_3a27et9",
+          "type": "like",
+          "username": "test123",
+          "date": "2025-08-28T05:39:34.933Z"
+        },
+        {
+          "id": "e_kyf6idr",
+          "type": "unlike",
+          "username": "test123",
+          "date": "2025-08-28T05:39:44.030Z"
+        },
+        {
+          "id": "e_leehqn1",
+          "type": "like",
+          "username": "test123",
+          "date": "2025-08-28T05:39:45.031Z"
+        }
+      ]
     },
     {
       "id": "p_2z2mg5m",

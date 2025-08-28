@@ -7,8 +7,10 @@ import morgan from 'morgan'
 import fs from 'fs'
 import path from 'path'
 import fetch from 'node-fetch' // if Node >=18 you can use global fetch
-import crypto from 'crypto';
+import crypto from 'crypto'
+import { fileURLToPath } from 'url'
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const toPublicUser = (u) => { const { password, ...safe } = u; return safe; };
 /* ----------------------------- Setup ----------------------------- */
@@ -24,7 +26,11 @@ app.use(cors({
 app.use(express.json())
 app.use(morgan('dev'))
 
-const DB_PATH = path.resolve('./posts.json')
+const DB_PATH = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : path.resolve(__dirname, '../posts.json');
+
+console.log('[Flashgram] DB_PATH:', DB_PATH);
 
 // Ensure DB file exists
 if (!fs.existsSync(DB_PATH)) {
