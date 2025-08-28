@@ -28,7 +28,7 @@ app.use(morgan('dev'))
 
 const DB_PATH = process.env.DB_PATH
   ? path.resolve(process.env.DB_PATH)
-  : path.resolve(__dirname, '../posts.json');
+  : path.resolve(__dirname, './posts.json');
 
 console.log('[Flashgram] DB_PATH:', DB_PATH);
 
