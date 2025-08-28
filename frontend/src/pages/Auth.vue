@@ -130,7 +130,7 @@
   const router = useRouter()
   const { login: setAuthUser } = useAuth()
   
-  const API = import.meta.env.VITE_API_BASE || 'http://localhost:5050'
+  const API = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
   
   const mode = ref('login') // or 'signup'
   const username = ref('')

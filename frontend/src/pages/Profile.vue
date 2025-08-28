@@ -319,9 +319,7 @@ import BeamsBackground from '@/components/BeamsBackground.vue'
 const route = useRoute()
 const router = useRouter()
 
-const API_BASE = (
-  import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? 'http://localhost:5050' : '')
-).replace(/\/+$/, '')
+const API_BASE = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
 
 const fallbackAvatar = 'https://img.freepik.com/premium-vector/user-icon-round-grey-icon_1076610-44912.jpg?w=360'
 

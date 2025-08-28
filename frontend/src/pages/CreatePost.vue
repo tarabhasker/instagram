@@ -161,8 +161,7 @@ import { useRouter, RouterLink } from 'vue-router'
 const router = useRouter()
 
 // Prefer VITE_API_BASE, fallback to older var name, then localhost
-const API_BASE = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '')
-  .replace(/\/+$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
 // -------- state --------
 const imageUrl = ref('')

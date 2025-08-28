@@ -157,14 +157,16 @@ const authHeaders = computed(() => {
 })
 
 const fetchJSON = async (path, options = {}) => {
-  const url = API_BASE ? `${API_BASE}${path}` : path; // if no base, use relative /api/...
+  const base = (import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
+  const url  = base ? `${base}${path}` : path   // if no base, use relative
   const r = await fetch(url, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}), ...authHeaders.value }
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
   })
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
   return r.json()
 }
+
 
 const fetchUser = async (username) => {
   if (!username) return null
