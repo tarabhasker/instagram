@@ -1,5 +1,5 @@
 # FastAPI service for LLM-only Instagram-style caption suggestions (no heavy ML).
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -20,18 +20,18 @@ OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat-v3-03
 app = FastAPI(title="PhotoFeed AI (LLM-only)", version="1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://<your-frontend>.vercel.app",   # <-- replace with your real Vercel domain
-    ],
-    allow_credentials=True,
+    allow_origins=["http://localhost:5173"],
+    allow_origin_regex=r"https://.*\.vercel\.app$",
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=False,  
 )
 
 @app.get("/health")
 def health():
     return {"ok": True, "mode": "llm-only"}
+
+
 
 # ---------- utils ----------
 _STOP = {"a","an","the","and","or","with","in","on","of","to","for","my","me","our","your",
@@ -103,24 +103,29 @@ def call_llm_captions(grounding: str, vibe: Optional[str], n_variants: int = 3) 
         vibe_tags = [_to_tag(w) for w in (tone or "").split()[:6]]
         return {"captions": [base], "hashtags": list(dict.fromkeys([t for t in vibe_tags if t]))[:6]}
 
-# ---------- schemas ----------
+
+# ----- use a router with /api prefix -----
+api = APIRouter(prefix="/api")
+
 class SuggestReq(BaseModel):
     imageUrl: str
     prompt: Optional[str] = None
     n_variants: int = 3
 
 # ---------- endpoints ----------
-@app.post("/ai/suggest")
+@api.post("/ai/suggest")
 def suggest(req: SuggestReq):
-    # LLM-only mode: we don't fetch/process the image; we trust the user's prompt
-    # If you want a little grounding, derive something simple from the URL:
+    # (your existing LLM-only suggest logic unchanged)
     filename = os.path.basename(req.imageUrl).split("?")[0]
     guess = " ".join(w for w in re.findall(r"[a-zA-Z]+", filename)) or "a moment"
     grounding = guess if req.prompt is None else req.prompt
-    out = call_llm_captions(grounding=grounding, vibe=req.prompt, n_variants=max(1, min(5, req.n_variants)))
+    out = call_llm_captions(grounding=grounding, vibe=req.prompt,
+                            n_variants=max(1, min(5, req.n_variants)))
     return {
         "analysis": {"note": "LLM-only mode; no image analysis performed"},
         "grounding": grounding,
         "captions": out["captions"],
         "hashtags": out["hashtags"],
     }
+
+app.include_router(api)
