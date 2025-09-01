@@ -18,14 +18,15 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE    = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat-v3.1:free")
 
-# Lightweight CLIP defaults
-CLIP_MODEL_NAME    = os.getenv("CLIP_MODEL_NAME", "RN50")       # RN50 is smaller/faster than ViT-B/32
-CLIP_PRETRAINED    = os.getenv("CLIP_PRETRAINED", "openai")     # RN50 -> "openai"
+# Feature switches
+USE_CLIP           = os.getenv("USE_CLIP", "false").lower() == "true"
+CLIP_MODEL_NAME    = os.getenv("CLIP_MODEL_NAME", "RN50")
+CLIP_PRETRAINED    = os.getenv("CLIP_PRETRAINED", "openai")
 CLIP_DEVICE        = "cuda" if (os.getenv("USE_CUDA","false").lower()=="true" and torch.cuda.is_available()) else "cpu"
 TORCH_THREADS      = int(os.getenv("TORCH_THREADS", "1"))
 USE_CAPTION_RERANK = os.getenv("RERANK_CAPTIONS", "true").lower() == "true"
 
-# Optional: Hugging Face Places365 for scenes when CLIP misses
+USE_HF_SCENES      = os.getenv("USE_HF_SCENES", "false").lower() == "true"
 HF_TOKEN           = os.getenv("HF_TOKEN", "").strip()
 HF_SCENE_ENDPOINT  = os.getenv("HF_SCENE_ENDPOINT", "https://api-inference.huggingface.co/models/zhanghang1989/ResNet50-Places365").strip()
 
@@ -33,7 +34,7 @@ torch.set_num_threads(TORCH_THREADS)
 torch.set_grad_enabled(False)
 
 # -------------------- App --------------------
-app = FastAPI(title="PhotoFeed AI (light CLIP + optional HF)", version="1.2")
+app = FastAPI(title="PhotoFeed AI (robust)", version="1.3")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -47,31 +48,45 @@ app.add_middleware(
 def root():
     return {"ok": True, "service": "PhotoFeed AI", "endpoints": ["/health", "/api/ai/analyze", "/api/ai/suggest"]}
 
-# -------------------- CLIP (open_clip) --------------------
-import open_clip
-_clip_model, _clip_preprocess, _clip_tokenizer = None, None, None
+# -------------------- CLIP (lazy & optional) --------------------
+_clip_model = _clip_preprocess = _clip_tokenizer = None
 _clip_ready = False
 _clip_error = None
 
+def _try_import_open_clip():
+    global open_clip
+    try:
+        import open_clip  # type: ignore
+        return open_clip
+    except Exception as e:
+        return None
+
 def _init_clip():
+    """Never block startup. If CLIP is disabled or unavailable, mark not ready and return quickly."""
     global _clip_model, _clip_preprocess, _clip_tokenizer, _clip_ready, _clip_error
-    if _clip_model is not None or _clip_ready:
+    if not USE_CLIP:
+        _clip_ready, _clip_error = False, "CLIP disabled by USE_CLIP=false"
+        return
+    if _clip_ready or _clip_model is not None:
+        return
+    oc = _try_import_open_clip()
+    if oc is None:
+        _clip_error, _clip_ready = "open_clip import failed", False
         return
     try:
-        model, _, preprocess = open_clip.create_model_and_transforms(CLIP_MODEL_NAME, pretrained=CLIP_PRETRAINED)
+        model, _, preprocess = oc.create_model_and_transforms(CLIP_MODEL_NAME, pretrained=CLIP_PRETRAINED)
         model.eval()
         model.to(CLIP_DEVICE)
         if CLIP_DEVICE == "cuda":
             model.half()
         _clip_model = model
         _clip_preprocess = preprocess
-        _clip_tokenizer = open_clip.get_tokenizer(CLIP_MODEL_NAME)
+        _clip_tokenizer = oc.get_tokenizer(CLIP_MODEL_NAME)
         _clip_ready = True
     except Exception as e:
-        _clip_error = str(e)
-        _clip_ready = False
+        # Do NOT crash request; just mark unavailable.
+        _clip_error, _clip_ready = str(e), False
 
-# Slightly expanded but still tiny vocab
 OBJECT_LABELS = [
     "person","dog","cat","bird","bicycle","car","bench","flower","tree","leaf",
     "mountain","river","ocean","beach","sunset","sky","cloud","coffee","book","camera",
@@ -85,13 +100,10 @@ SCENE_LABELS  = [
 _text_bank: Dict[str, torch.Tensor] = {}
 
 def _text_features(labels: List[str], template: str) -> torch.Tensor:
-    if not labels:
+    if not labels or not _clip_ready:
         return torch.zeros((0, 512))
     key = f"{template}||{'|'.join(labels)}"
     if key in _text_bank: return _text_bank[key]
-    _init_clip()
-    if not _clip_ready:
-        return torch.zeros((len(labels), 512))
     toks = _clip_tokenizer([template.format(l) for l in labels]).to(CLIP_DEVICE)
     with torch.no_grad():
         txt = _clip_model.encode_text(toks)
@@ -102,7 +114,6 @@ def _text_features(labels: List[str], template: str) -> torch.Tensor:
     return txt
 
 def _image_features(img: Image.Image) -> torch.Tensor:
-    _init_clip()
     if not _clip_ready:
         return torch.zeros((1, 512))
     t = _clip_preprocess(img).unsqueeze(0)
@@ -114,7 +125,7 @@ def _image_features(img: Image.Image) -> torch.Tensor:
     return feat.cpu()
 
 def _rank_labels(img: Image.Image, labels: List[str], template="a photo of {}") -> List[Tuple[str, float]]:
-    if not labels:
+    if not labels or not _clip_ready:
         return []
     try:
         img_f = _image_features(img)
@@ -130,7 +141,7 @@ def _rank_labels(img: Image.Image, labels: List[str], template="a photo of {}") 
     except Exception:
         return []
 
-# -------------------- HF Places365 (optional scenes) --------------------
+# -------------------- HF Places365 (strictly opt-in) --------------------
 def _img_to_jpeg_bytes(img: Image.Image, max_side=256, quality=85) -> bytes:
     w, h = img.size
     if max(w, h) > max_side:
@@ -141,7 +152,7 @@ def _img_to_jpeg_bytes(img: Image.Image, max_side=256, quality=85) -> bytes:
     return buf.getvalue()
 
 def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
-    if not HF_TOKEN or not HF_SCENE_ENDPOINT:
+    if not USE_HF_SCENES or not HF_TOKEN or not HF_SCENE_ENDPOINT:
         return []
     try:
         payload = _img_to_jpeg_bytes(img, max_side=256)
@@ -152,22 +163,17 @@ def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
             timeout=12
         )
         r.raise_for_status()
-        preds = r.json()  # list of {label, score}
+        preds = r.json()
         if isinstance(preds, list):
             labs = []
             for p in preds[:top_k]:
                 lbl = str(p.get("label","")).split(",")[0].strip().lower()
-                if lbl:
-                    labs.append(lbl)
-            # dedupe and keep simple tokens only
-            out = []
-            seen = set()
+                if lbl: labs.append(lbl)
+            out, seen = [], set()
             for l in labs:
-                l = re.sub(r"[^a-z0-9\- ]+","", l)
-                l = l.split("/")[-1].strip()
+                l = re.sub(r"[^a-z0-9\- ]+","", l).split("/")[-1].strip()
                 if l and l not in seen:
-                    seen.add(l)
-                    out.append(l)
+                    seen.add(l); out.append(l)
             return out[:top_k]
         return []
     except Exception:
@@ -258,9 +264,7 @@ def call_llm_captions(grounding: str, vibe: Optional[str], objects=None, scenes=
         for c in (caps or []):
             if not c: continue
             c = clean_caption(c)
-            # collapse repeated words: "aesthetic aesthetic"
-            c = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c, flags=re.I)
-            # remove banned vibe words completely
+            c = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c, flags=re.I)  # remove immediate duplicates
             words = _tokens(c)
             words = [w for w in words if w.lower() not in ban]
             if not words: continue
@@ -303,7 +307,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Flashgram-AI/1.2 (+https://example.com)"})
+_session.headers.update({"User-Agent": "Flashgram-AI/1.3 (+https://example.com)"})
 _retry = Retry(
     total=2, connect=2, read=2,
     backoff_factor=0.6,
@@ -341,14 +345,16 @@ class SuggestReq(BaseModel):
     top_k: int = 6
     n_variants: int = 3
 
-# -------------------- API Router --------------------
+# -------------------- Router --------------------
 api = APIRouter(prefix="/api")
 
 @app.get("/health")
 def health():
+    # No CLIP init here (fast & safe)
     return {
         "ok": True,
         "clip": {
+            "enabled": USE_CLIP,
             "model": CLIP_MODEL_NAME,
             "pretrained": CLIP_PRETRAINED,
             "device": CLIP_DEVICE,
@@ -357,7 +363,7 @@ def health():
             "ready": _clip_ready,
             "error": _clip_error,
         },
-        "hf": {"enabled": bool(HF_TOKEN), "endpoint": bool(HF_SCENE_ENDPOINT)},
+        "hf": {"enabled": USE_HF_SCENES, "has_token": bool(HF_TOKEN)},
         "llm": {"has_key": bool(OPENROUTER_API_KEY), "model": OPENROUTER_MODEL},
     }
 
@@ -368,11 +374,14 @@ def analyze(req: AnalyzeReq):
     except Exception as e:
         return JSONResponse(status_code=422, content={"error":{"code":"IMAGE_FETCH_FAILED","message":str(e)}})
 
+    # Lazy-init CLIP on demand, but never block if disabled/unavailable
+    _init_clip()
+
     k = max(1, min(8, req.top_k))
     objs = _rank_labels(img, OBJECT_LABELS, template="a photo of {}")[:k]
     scns = _rank_labels(img, SCENE_LABELS, template="a {} scene")[:k]
 
-    # If scenes empty and HF enabled -> try Places365
+    # Only if CLIP gave no scenes AND HF is explicitly enabled
     if not scns:
         hf_s = hf_scene_labels(img, top_k=min(3, k))
         if hf_s:
@@ -385,21 +394,20 @@ def analyze(req: AnalyzeReq):
 
 @api.post("/ai/suggest")
 def suggest(req: SuggestReq):
-    # Try to fetch the image; if it fails, we still return captions.
     img = None
     analysis = {"objects": [], "scenes": []}
     try:
         img = fetch_image(req.imageUrl)
     except Exception:
-        pass  # graceful fallback
+        pass
 
     if img is not None:
+        _init_clip()
         k = max(1, min(8, req.top_k))
         obj_pairs = _rank_labels(img, OBJECT_LABELS, template="a photo of {}")[:k]
         scn_pairs = _rank_labels(img, SCENE_LABELS, template="a {} scene")[:k]
 
-        # If scenes empty and HF enabled -> try Places365
-        if not scn_pairs:
+        if not scn_pairs:  # optional HF scenes
             hf_s = hf_scene_labels(img, top_k=min(3, k))
             if hf_s:
                 scn_pairs = [(s, 0.0) for s in hf_s]
@@ -433,12 +441,13 @@ def suggest(req: SuggestReq):
     captions = out.get("captions") or [grounding]
     hashtags = out.get("hashtags") or fallback_hashtags(req.prompt, grounding)
 
-    # (Optional) rerank with CLIP if enabled and we have an image
+    # Optional rerank (only if CLIP actually ready)
     if img is not None and USE_CAPTION_RERANK and len(captions) > 1:
         _init_clip()
         if _clip_ready:
+            oc = _try_import_open_clip()
             img_f = _image_features(img)
-            toks = open_clip.get_tokenizer(CLIP_MODEL_NAME)(captions).to(CLIP_DEVICE)
+            toks = oc.get_tokenizer(CLIP_MODEL_NAME)(captions).to(CLIP_DEVICE)
             with torch.no_grad():
                 txt = _clip_model.encode_text(toks)
                 txt = txt / txt.norm(dim=-1, keepdim=True)
