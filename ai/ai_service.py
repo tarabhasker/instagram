@@ -1,3 +1,4 @@
+# ai_service.py
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -34,14 +35,15 @@ torch.set_num_threads(TORCH_THREADS)
 torch.set_grad_enabled(False)
 
 # -------------------- App --------------------
-app = FastAPI(title="PhotoFeed AI (robust)", version="1.3")
+app = FastAPI(title="PhotoFeed AI (robust)", version="1.4")
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_origin_regex=r"https://.*\.vercel\.app$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=False,
+    CORSMiddleware(
+        allow_origins=["http://localhost:5173"],
+        allow_origin_regex=r"https://.*\.vercel\.app$",
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=False,
+    )
 )
 
 @app.get("/")
@@ -58,7 +60,7 @@ def _try_import_open_clip():
     try:
         import open_clip  # type: ignore
         return open_clip
-    except Exception as e:
+    except Exception:
         return None
 
 def _init_clip():
@@ -88,13 +90,14 @@ def _init_clip():
         _clip_error, _clip_ready = str(e), False
 
 OBJECT_LABELS = [
-    "person","dog","cat","bird","bicycle","car","bench","flower","tree","leaf",
-    "mountain","river","ocean","beach","sunset","sky","cloud","coffee","book","camera",
-    "cup","table","chair","window","streetlight","bridge","building","notebook","train","bus"
+    "person","hat","straw hat","dress","polka dot dress","sunglasses","smile","fountain",
+    "building","church","cathedral","square","plaza","cafe table","bicycle","scooter",
+    "bench","flower","tree","cloud","sky","camera","book","coffee","backpack"
 ]
-SCENE_LABELS  = [
-    "park","forest","garden","street","city","rooftop","cafe","bridge","lake","waterfall",
-    "desert","snow","museum","temple","beach","cliff","library","studio","kitchen","market"
+
+SCENE_LABELS = [
+    "city square","historic center","old town","street","plaza","rooftop","cafe","market",
+    "courtyard","bridge","waterfront","park","museum","temple","church","beach","library"
 ]
 
 _text_bank: Dict[str, torch.Tensor] = {}
@@ -103,12 +106,14 @@ def _text_features(labels: List[str], template: str) -> torch.Tensor:
     if not labels or not _clip_ready:
         return torch.zeros((0, 512))
     key = f"{template}||{'|'.join(labels)}"
-    if key in _text_bank: return _text_bank[key]
+    if key in _text_bank:
+        return _text_bank[key]
     toks = _clip_tokenizer([template.format(l) for l in labels]).to(CLIP_DEVICE)
     with torch.no_grad():
         txt = _clip_model.encode_text(toks)
         txt = txt / txt.norm(dim=-1, keepdim=True)
-    if CLIP_DEVICE == "cuda": txt = txt.float()
+    if CLIP_DEVICE == "cuda":
+        txt = txt.float()
     txt = txt.cpu()
     _text_bank[key] = txt
     return txt
@@ -121,7 +126,8 @@ def _image_features(img: Image.Image) -> torch.Tensor:
     with torch.no_grad():
         feat = _clip_model.encode_image(t)
         feat = feat / feat.norm(dim=-1, keepdim=True)
-    if CLIP_DEVICE == "cuda": feat = feat.float()
+    if CLIP_DEVICE == "cuda":
+        feat = feat.float()
     return feat.cpu()
 
 def _rank_labels(img: Image.Image, labels: List[str], template="a photo of {}") -> List[Tuple[str, float]]:
@@ -188,11 +194,50 @@ def clean_caption(text: str) -> str:
     if not text: return text
     t = re.sub(r"\s+"," ",text).strip()
     return t[0].upper()+t[1:] if t else t
+
 def safe_grounding_from_url(url: str) -> Optional[str]:
     name = os.path.basename(url).split("?")[0].lower()
-    toks = [t for t in re.findall(r"[a-z]{3,}", name) if t not in {"image","img","photo","pic","file","upload","final","edit","share","jpg","jpeg","png","webp"}]
-    if not toks or sum(c in "aeiou" for c in "".join(toks)) < 2: return None
-    return " ".join(toks[:4])
+    toks = re.findall(r"[a-z]{3,}", name)
+    DROP = {
+        "image","img","photo","picture","pic","file","upload","final","edit","share",
+        "dreamstime","thumbs","close","up","b","jpg","jpeg","png","webp","size","resolution",
+        "stock","royalty","free","model","copyspace","girl","boy","man","woman","people"
+    }
+    keep = [t for t in toks if t not in DROP]
+    PRIORITY = {"fountain","plaza","square","italy","rome","florence","venice","street",
+                "city","old","town","hat","dress","polka","dots","summer","travel"}
+    keep.sort(key=lambda w: (0 if w in PRIORITY else 1))
+    keep = keep[:8]
+    phrase = " ".join(keep).strip()
+    return phrase or None
+
+def build_hashtags(objects: List[str], scenes: List[str], url_hint: str, vibe: Optional[str]) -> List[str]:
+    seeds = []
+    # real detections first
+    seeds += [re.sub(r"[^a-z0-9]+","-", o.lower()).strip("-") for o in (objects[:3] or [])]
+    seeds += [re.sub(r"[^a-z0-9]+","-", s.lower()).strip("-") for s in (scenes[:3] or [])]
+    # location/thing words from URL
+    for w in re.findall(r"[a-z]{3,}", url_hint.lower()):
+        if w in {"dreamstime","close","thumbs","image","img","photo","picture","stock","royalty","free"}:
+            continue
+        seeds.append(re.sub(r"[^a-z0-9]+","-", w))
+    # gentle vibe tail (avoid the vibe word itself)
+    vibe_tail = sanitize_vibe(vibe or "")
+    seeds += [w for w in vibe_tail.split() if w not in {"happy","mood","aesthetic"}]
+    # normalize, dedupe, format
+    out, seen = [], set()
+    for s in seeds:
+        s = s.strip("-")
+        if not s or s in seen: continue
+        seen.add(s); out.append("#"+s)
+    # tasteful defaults only if short
+    defaults = ["#street-moment","#soft-light","#daily-notes"]
+    for d in defaults:
+        if len(out) >= 6: break
+        if d not in out: out.append(d)
+    return out[:6]
+
+# (kept for compatibility; we no longer rely on it unless you call directly)
 def fallback_hashtags(prompt: Optional[str], grounding: str) -> List[str]:
     base = sanitize_vibe(prompt or "") or sanitize_vibe(grounding)
     tags = [_to_tag(w) for w in base.split() if w]
@@ -222,13 +267,13 @@ def call_llm_captions(grounding: str, vibe: Optional[str], objects=None, scenes=
         vibe_rules.append("reference at least 1 concrete element from objects/scenes (not a literal list)")
 
     system = (
-        "You write Instagram captions that feel human and specific.\n"
-        "Use grounding/objects/scenes for facts; do NOT repeat the user's style words.\n"
-        "Avoid generic filler and repetition. No quotes, emojis, or hashtags inside captions.\n"
-        "Vary lengths across options.\n"
-        "Output STRICT JSON: {\"captions\":[\"...\"], \"hashtags\":[\"#...\"]}\n"
-        f"Banned words: {', '.join(banned_tokens) if banned_tokens else '(none)'}\n"
-        "If style words are in input, interpret them as tone only."
+        "You are a social caption writer. Write human, specific Instagram captions.\n"
+        "Use the provided grounding/objects/scenes as facts, but do not list them literally.\n"
+        "Do not repeat the user's style word(s). No emojis, no hashtags, no quotes.\n"
+        "Each option must feel different in tone and rhythm.\n"
+        "Required mix: 1 micro (2–4 words), 2 short (≤12 words), 1 mid (12–22), 1 long (22–40).\n"
+        "Prefer sensory details and place vibes (light, weather, texture) over generic adjectives.\n"
+        'Return STRICT JSON: {"captions":["..."], "hashtags":["#..."]}'
     )
 
     user = {
@@ -262,15 +307,28 @@ def call_llm_captions(grounding: str, vibe: Optional[str], objects=None, scenes=
         out = []
         ban = set(banned_tokens)
         for c in (caps or []):
-            if not c: continue
+            if not c: 
+                continue
             c = clean_caption(c)
-            c = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c, flags=re.I)  # remove immediate duplicates
+            c = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c, flags=re.I)  # kill immediate dup words
             words = _tokens(c)
-            words = [w for w in words if w.lower() not in ban]
-            if not words: continue
+            words = [w for w in words if w.lower() not in ban]      # remove vibe echoes
+            if not words:
+                continue
             c = words[0].capitalize() + (" " + " ".join(words[1:]) if len(words) > 1 else "")
-            if c not in out: out.append(c)
-        return out
+            out.append(c)
+
+        # final dedupe case-insensitive
+        seen_caps, deduped = set(), []
+        for c in out:
+            k = c.lower().strip()
+            if k not in seen_caps:
+                seen_caps.add(k)
+                deduped.append(c)
+        return deduped
+
+    def _too_plain(c: str) -> bool:
+        return len(c.split()) <= 3 or bool(re.fullmatch(r"[A-Za-z ]{1,20}", c))
 
     try:
         if not OPENROUTER_API_KEY:
@@ -291,6 +349,13 @@ def call_llm_captions(grounding: str, vibe: Optional[str], objects=None, scenes=
         obj = json.loads(m.group(0)) if m else {"captions":[text.strip()], "hashtags":[]}
 
         caps = _postprocess_caps(obj.get("captions", []))
+        if all(_too_plain(c) for c in caps) and (objs or scns):
+            scene_hint = (scns[0] if scns else "").replace("-", " ")
+            obj_hint   = (objs[0] if objs else "")
+            filler = "in the" if scene_hint else "with"
+            backup = clean_caption(f"{obj_hint} {filler} {scene_hint}, soft light and easy smiles").strip(", ")
+            caps = [backup] + caps
+
         tags = obj.get("hashtags") or [f"#{re.sub(r'[^a-z0-9]+','-',t)}" for t in (objs[:3] + scns[:3])]
         tags = [t if str(t).startswith("#") else "#"+str(t) for t in tags]
         tags = list(dict.fromkeys([t for t in tags if t and t != "#"]))[:8]
@@ -307,7 +372,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Flashgram-AI/1.3 (+https://example.com)"})
+_session.headers.update({"User-Agent": "Flashgram-AI/1.4 (+https://example.com)"})
 _retry = Retry(
     total=2, connect=2, read=2,
     backoff_factor=0.6,
@@ -374,15 +439,13 @@ def analyze(req: AnalyzeReq):
     except Exception as e:
         return JSONResponse(status_code=422, content={"error":{"code":"IMAGE_FETCH_FAILED","message":str(e)}})
 
-    # Lazy-init CLIP on demand, but never block if disabled/unavailable
-    _init_clip()
+    _init_clip()  # lazy init
 
     k = max(1, min(8, req.top_k))
     objs = _rank_labels(img, OBJECT_LABELS, template="a photo of {}")[:k]
     scns = _rank_labels(img, SCENE_LABELS, template="a {} scene")[:k]
 
-    # Only if CLIP gave no scenes AND HF is explicitly enabled
-    if not scns:
+    if not scns:  # optional HF scenes when CLIP misses
         hf_s = hf_scene_labels(img, top_k=min(3, k))
         if hf_s:
             scns = [(s, 0.0) for s in hf_s]
@@ -439,7 +502,10 @@ def suggest(req: SuggestReq):
     )
 
     captions = out.get("captions") or [grounding]
-    hashtags = out.get("hashtags") or fallback_hashtags(req.prompt, grounding)
+    hashtags = out.get("hashtags")
+    if not hashtags or len(hashtags) < 3:
+        url_hint = os.path.basename((req.imageUrl or "").split("?")[0])
+        hashtags = build_hashtags(obj_labels, scn_labels, url_hint, req.prompt)
 
     # Optional rerank (only if CLIP actually ready)
     if img is not None and USE_CAPTION_RERANK and len(captions) > 1:
@@ -455,11 +521,9 @@ def suggest(req: SuggestReq):
             order = sorted(range(len(captions)), key=lambda i: sims[i], reverse=True)
             captions = [captions[i] for i in order]
 
-    # Fallback labels if analysis empty
+    # Fallback labels if analysis empty (NO hashtag mirroring)
     fallback_labels: List[str] = []
     if not analysis["objects"] and not analysis["scenes"]:
-        if hashtags:
-            fallback_labels.extend([h.lstrip("#") for h in hashtags if isinstance(h, str)])
         for w in re.findall(r"[a-z0-9]{3,}", (grounding or "").lower()):
             if w not in _STOP:
                 fallback_labels.append(w)
@@ -471,12 +535,8 @@ def suggest(req: SuggestReq):
     seen = set()
     fallback_labels = [w for w in fallback_labels if not (w in seen or seen.add(w))][:6]
 
-    out_labels = (
-        [o["label"] for o in analysis["objects"][:3]] +
-        [s["label"] for s in analysis["scenes"][:3]]
-    )
-    if not out_labels:
-        out_labels = fallback_labels
+    out_labels = ([o["label"] for o in analysis["objects"][:3]]
+                  + [s["label"] for s in analysis["scenes"][:3]]) or fallback_labels[:6]
 
     return {
         "analysis": analysis,
