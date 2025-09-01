@@ -178,9 +178,8 @@
             @keydown.enter.prevent="submitInlineComment"
           />
           <button
-            class="inline-flex items-center gap-2 rounded-xl px-3 h-9 text-sm font-medium border border-white/15 text-neutral-100 bg-white/5 hover:bg-white/10 disabled:opacity-60 transition"
-            :disabled="!inlineDraft"
-            @click="submitInlineComment"
+            class="ml-auto rounded-xl px-3 h-9 text-sm font-semibold text-white bg-[#e4ae87] hover:bg-[#d6a17c] transition"
+            @click="sendShare"
           >
             Send
           </button>
@@ -673,19 +672,48 @@ watch(postId, load)
 }
 
 /* --- Sheets / Modals --- */
-.sheet{
-  position: fixed; inset-inline: 0; bottom: 0; z-index: 9999;
-  margin-inline: auto; width: min(720px, 94%); max-height: 80vh;
-  border-radius: 20px 20px 0 0; overflow: hidden;
+.sheet {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 9999;
+  margin-inline: auto;
+  width: min(720px, 94%);
+  max-height: 80vh;
+  border-radius: 20px 20px 0 0;
+  overflow: hidden;
   border: 1px solid rgba(255,255,255,.12);
-  background: rgba(0,0,0,.7); backdrop-filter: blur(8px);
-  display: grid; grid-template-rows: auto 1fr auto;
+  background: rgba(0,0,0,.7);
+  backdrop-filter: blur(8px);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  
+  /* ✅ ensure text is light */
+  color: #fff;
 }
+
 .sheet-hd{ display:flex; align-items:center; justify-content:space-between; padding: .85rem 1rem; border-bottom: 1px solid rgba(255,255,255,.08); }
 .sheet-body{ padding: .9rem 1rem; overflow: auto; }
 .sheet-ft{ display:flex; align-items:center; gap:.5rem; padding: .75rem 1rem; border-top: 1px solid rgba(255,255,255,.08); }
 .x-btn{ width:2rem; height:2rem; border-radius:.6rem; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.06); }
-.opt-row{ width:100%; display:flex; align-items:center; gap:.75rem; justify-content:space-between; padding:.7rem .9rem; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.04); border-radius:.8rem; }
+.opt-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  justify-content: space-between;
+  padding: .7rem .9rem;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.04);
+  border-radius: .8rem;
+  
+  /* ✅ text color */
+  color: #fff;
+}
+
+.sheet-body .flex-1 {
+  color: #fff; /* usernames and names in share modal */
+}
 
 .fade-enter-active,.fade-leave-active{ transition: opacity .2s }
 .fade-enter-from,.fade-leave-to{ opacity: 0 }
