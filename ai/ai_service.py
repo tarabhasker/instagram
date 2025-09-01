@@ -34,6 +34,22 @@ HF_SCENE_ENDPOINT  = os.getenv("HF_SCENE_ENDPOINT", "https://api-inference.huggi
 torch.set_num_threads(TORCH_THREADS)
 torch.set_grad_enabled(False)
 
+# ---- Preload/cache for CLIP on serverless cold starts ----
+os.environ.setdefault("OPENCLIP_CACHE_DIR", "/tmp/open_clip_cache")
+os.environ.setdefault("TORCH_HOME", "/tmp/torch")
+
+try:
+    import open_clip  # noqa
+    # Touch the weights once so first user request doesn't download them
+    _m, _, _ = open_clip.create_model_and_transforms(
+        os.getenv("CLIP_MODEL_NAME", "RN50"),
+        pretrained=os.getenv("CLIP_PRETRAINED", "openai")
+    )
+    print("[startup] CLIP weights preloaded")
+except Exception as e:
+    print("[startup] CLIP preload skipped:", e)
+
+
 # -------------------- App --------------------
 app = FastAPI(title="PhotoFeed AI (robust)", version="1.3")
 
@@ -247,6 +263,38 @@ def fallback_hashtags(prompt: Optional[str], grounding: str) -> List[str]:
     defaults = ["#soft-light","#evening-tones","#street-moment","#quiet-hours","#daily-notes","#mood"]
     uniq = list(dict.fromkeys([t for t in (tags + defaults) if t and t != "#"]))
     return uniq[:6]
+
+def url_aesthetic_hint(url: str, vibe: Optional[str]) -> str:
+    """Turn raw URL bits into a pleasant, imagistic hint for the LLM."""
+    base = os.path.basename((url or "").split("?")[0]).lower()
+    words = [w for w in re.findall(r"[a-z]{3,}", base)]
+    drop = {"image","img","photo","picture","stock","royalty","free","model","people",
+            "girl","boy","man","woman","close","up","thumbs","dreamstime","jpeg","jpg","png","webp"}
+    keep = [w for w in words if w not in drop]
+    # light scene heuristics
+    place = next((w for w in keep if w in {"square","plaza","street","harbor","cafe","market","church","cathedral","fountain"}), "")
+    country = next((w for w in keep if w in {"italy","france","spain","greece","japan"}), "")
+    season = next((w for w in keep if w in {"summer","spring","autumn","winter"}), "")
+    # compose
+    bits = []
+    if season: bits.append(season)
+    if place and country: bits.append(f"{place} in {country}")
+    elif place: bits.append(place)
+    elif country: bits.append(country)
+    if not bits: bits.append("sunny old town")
+    # tone
+    sv = sanitize_vibe(vibe or "")
+    if sv and sv not in {"happy","aesthetic"}:
+        bits.append(sv)
+    return ", ".join(bits)
+
+def blind_caption_templates(hint: str) -> List[str]:
+    return [
+        clean_caption(hint.split(",")[0] + " light"),
+        clean_caption("Wandering " + hint.split(",")[0]),
+        clean_caption("Postcards from " + hint.split(",")[-1].strip()),
+        clean_caption("Slow steps through " + hint.split(",")[0])
+    ]
 
 # -------------------- LLM (DeepSeek via OpenRouter) --------------------
 def call_llm_captions(grounding: str, vibe: Optional[str], objects=None, scenes=None, n_variants: int = 3) -> dict:
@@ -496,6 +544,11 @@ def suggest(req: SuggestReq):
 
     obj_labels = [o["label"] for o in analysis["objects"]][:5]
     scn_labels = [s["label"] for s in analysis["scenes"]][:3]
+
+    # 🔹 If vision gave us nothing, synthesize a nicer grounding from the URL
+    if not obj_labels and not scn_labels:
+        grounding = url_aesthetic_hint(req.imageUrl, req.prompt)
+
     out = call_llm_captions(
         grounding=grounding,
         vibe=req.prompt,
@@ -504,7 +557,12 @@ def suggest(req: SuggestReq):
         n_variants=max(1, min(5, req.n_variants))
     )
 
-    captions = out.get("captions") or [grounding]
+
+    captions = out.get("captions")
+    if not captions:
+        # Final safety net: synthesize some captions from the URL hint
+        captions = blind_caption_templates(grounding)
+
     hashtags = out.get("hashtags")
     if not hashtags or len(hashtags) < 3:
         url_hint = os.path.basename((req.imageUrl or "").split("?")[0])
