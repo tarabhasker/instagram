@@ -206,8 +206,19 @@ const suggest = async () => {
     if (Array.isArray(data.hashtags)) hashtags.value = data.hashtags
 
     const objs = (data.analysis?.objects || []).map(o => o.label)
-    const scns = (data.analysis?.scenes || []).map(s => s.label)
+    const scns = (data.analysis?.scenes  || []).map(s => s.label)
     analysisLabels.value = [...new Set([...objs.slice(0,3), ...scns.slice(0,3)])]
+
+    // NEW: if API provided direct labels, or analysis is empty, use them
+    if ((!analysisLabels.value.length) && Array.isArray(data.labels) && data.labels.length) {
+      analysisLabels.value = [...new Set(data.labels)].slice(0, 6)
+    }
+
+    // LAST RESORT: derive from hashtags
+    if ((!analysisLabels.value.length) && Array.isArray(data.hashtags)) {
+      analysisLabels.value = data.hashtags.map(h => String(h).replace(/^#/, '')).slice(0, 6)
+    }
+
   } catch (e) {
     alert('AI suggestion failed. You can still post manually.')
   } finally {

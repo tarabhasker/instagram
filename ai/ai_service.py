@@ -291,7 +291,7 @@ def suggest(req: SuggestReq):
     captions = out.get("captions") or [grounding]
     hashtags = out.get("hashtags") or fallback_hashtags(req.prompt, grounding)
 
-    # (Optional) rerank when we actually had an image & multiple captions
+    # (Optional) rerank ...
     if img is not None and USE_CAPTION_RERANK and len(captions) > 1:
         _init_clip()
         img_f = _image_features(img)
@@ -303,6 +303,36 @@ def suggest(req: SuggestReq):
         order = sorted(range(len(captions)), key=lambda i: sims[i], reverse=True)
         captions = [captions[i] for i in order]
 
-    return {"analysis": analysis, "grounding": grounding, "captions": captions[:max(1, min(5, req.n_variants))], "hashtags": hashtags[:8]}
+    # --- FIX 1: synthesize fallback labels ---
+    fallback_labels: List[str] = []
+    if not analysis["objects"] and not analysis["scenes"]:
+        if hashtags:
+            fallback_labels.extend([h.lstrip("#") for h in hashtags if isinstance(h, str)])
+        for w in re.findall(r"[a-z0-9]{3,}", (grounding or "").lower()):
+            if w not in _STOP:
+                fallback_labels.append(w)
+        for w in (sanitize_vibe(req.prompt or "")).split():
+            fallback_labels.append(w)
+
+    fallback_labels = [re.sub(r"[^a-z0-9-]+", "", w) for w in fallback_labels]
+    fallback_labels = [w for w in fallback_labels if w]
+    seen = set()
+    fallback_labels = [w for w in fallback_labels if not (w in seen or seen.add(w))][:6]
+
+    out_labels = (
+        [o["label"] for o in analysis["objects"][:3]] +
+        [s["label"] for s in analysis["scenes"][:3]]
+    )
+    if not out_labels:
+        out_labels = fallback_labels
+
+    # final response (with labels now included)
+    return {
+        "analysis": analysis,
+        "grounding": grounding,
+        "captions": captions[:max(1, min(5, req.n_variants))],
+        "hashtags": hashtags[:8],
+        "labels": out_labels,   # <-- new
+    }
 
 app.include_router(api)
