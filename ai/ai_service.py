@@ -35,15 +35,18 @@ torch.set_num_threads(TORCH_THREADS)
 torch.set_grad_enabled(False)
 
 # -------------------- App --------------------
-app = FastAPI(title="PhotoFeed AI (robust)", version="1.4")
+app = FastAPI(title="PhotoFeed AI (robust)", version="1.3")
+
 app.add_middleware(
-    CORSMiddleware(
-        allow_origins=["http://localhost:5173"],
-        allow_origin_regex=r"https://.*\.vercel\.app$",
-        allow_methods=["*"],
-        allow_headers=["*"],
-        allow_credentials=False,
-    )
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "https://tara-takehome-ui.vercel.app",
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=False,
 )
 
 @app.get("/")
