@@ -48,26 +48,40 @@ def root():
 def health():
     return {
         "ok": True,
-        "clip": {"model": CLIP_MODEL_NAME, "pretrained": CLIP_PRETRAINED, "device": CLIP_DEVICE, "threads": TORCH_THREADS, "rerank": USE_CAPTION_RERANK},
+        "clip": {
+            "model": CLIP_MODEL_NAME,
+            "pretrained": CLIP_PRETRAINED,
+            "device": CLIP_DEVICE,
+            "threads": TORCH_THREADS,
+            "rerank": USE_CAPTION_RERANK,
+            "ready": _clip_ready,
+            "error": _clip_error,
+        },
         "llm": {"has_key": bool(OPENROUTER_API_KEY), "model": OPENROUTER_MODEL},
     }
 
 # -------------------- CLIP (open_clip) --------------------
-import open_clip
 _clip_model, _clip_preprocess, _clip_tokenizer = None, None, None
+_clip_ready = False
+_clip_error = None
 
 def _init_clip():
-    global _clip_model, _clip_preprocess, _clip_tokenizer
-    if _clip_model is not None:
+    global _clip_model, _clip_preprocess, _clip_tokenizer, _clip_ready, _clip_error
+    if _clip_model is not None or _clip_ready:
         return
-    model, _, preprocess = open_clip.create_model_and_transforms(CLIP_MODEL_NAME, pretrained=CLIP_PRETRAINED)
-    model.eval()
-    model.to(CLIP_DEVICE)
-    if CLIP_DEVICE == "cuda":
-        model.half()
-    _clip_model = model
-    _clip_preprocess = preprocess
-    _clip_tokenizer = open_clip.get_tokenizer(CLIP_MODEL_NAME)
+    try:
+        model, _, preprocess = open_clip.create_model_and_transforms(CLIP_MODEL_NAME, pretrained=CLIP_PRETRAINED)
+        model.eval()
+        model.to(CLIP_DEVICE)
+        if CLIP_DEVICE == "cuda":
+            model.half()
+        _clip_model = model
+        _clip_preprocess = preprocess
+        _clip_tokenizer = open_clip.get_tokenizer(CLIP_MODEL_NAME)
+        _clip_ready = True
+    except Exception as e:
+        _clip_error = str(e)
+        _clip_ready = False
 
 OBJECT_LABELS = ["person","dog","cat","bird","bicycle","car","bench","flower","tree","leaf","mountain","river","ocean","beach","sunset","sky","cloud","coffee","book","camera"]
 SCENE_LABELS  = ["park","forest","garden","street","city","rooftop","cafe","bridge","lake","waterfall","desert","snow","museum","temple","beach","cliff"]
@@ -89,6 +103,8 @@ def _text_features(labels: List[str], template: str) -> torch.Tensor:
 
 def _image_features(img: Image.Image) -> torch.Tensor:
     _init_clip()
+    if not _clip_ready:
+        return torch.zeros((1, 512))
     t = _clip_preprocess(img).unsqueeze(0)
     t = t.half().to(CLIP_DEVICE) if CLIP_DEVICE=="cuda" else t.to(CLIP_DEVICE)
     with torch.no_grad():
@@ -98,13 +114,22 @@ def _image_features(img: Image.Image) -> torch.Tensor:
     return feat.cpu()
 
 def _rank_labels(img: Image.Image, labels: List[str], template="a photo of {}") -> List[Tuple[str, float]]:
-    if not labels: return []
-    img_f = _image_features(img)
-    txt_f = _text_features(labels, template)
-    sims = (img_f @ txt_f.T).squeeze(0).numpy().tolist()
-    pairs = list(zip(labels, sims))
-    pairs.sort(key=lambda x: x[1], reverse=True)
-    return pairs
+    if not labels:
+        return []
+    try:
+        img_f = _image_features(img)
+        if img_f.numel() == 0:
+            return []
+        txt_f = _text_features(labels, template)
+        if txt_f.numel() == 0:
+            return []
+        sims = (img_f @ txt_f.T).squeeze(0).numpy().tolist()
+        pairs = list(zip(labels, sims))
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        return pairs
+    except Exception:
+        return []
+
 
 # -------------------- Caption utils --------------------
 _STOP = {"a","an","the","and","or","with","in","on","of","to","for","my","me","our","your","we","us","you","his","her","their","at","by","from","as"}

@@ -468,24 +468,32 @@ app.get('/api/users/:username/saved', (req, res) => {
 /* ----------------------------- AI Proxy -------------------------- */
 
 app.post('/api/ai/suggest', async (req, res) => {
-  const { imageUrl, prompt } = req.body || {}
+  const { imageUrl, prompt } = req.body || {};
   if (!imageUrl) {
-    return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'imageUrl required' } })
+    return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'imageUrl required' } });
   }
   try {
-    const AI_BASE = process.env.AI_URL || 'http://localhost:8001'
+    const AI_BASE = process.env.AI_URL || 'http://localhost:8001';
+    if (!process.env.AI_URL) {
+      console.warn('[AI Proxy] AI_URL not set; defaulting to', AI_BASE);
+    }
     const r = await fetch(`${AI_BASE}/api/ai/suggest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ imageUrl, prompt: prompt || null }),
-    })
-    const data = await r.json()
-    res.status(r.ok ? 200 : r.status).json(data)
+    });
+    const text = await r.text();
+    if (!r.ok) {
+      console.error('[AI Proxy] Upstream error', r.status, text.slice(0, 500));
+      return res.status(r.status).type('application/json').send(text);
+    }
+    res.type('application/json').send(text);
   } catch (e) {
-    console.error('AI proxy failed', e)
-    res.status(502).json({ error: { code: 'AI_UNAVAILABLE', message: 'AI service unreachable' } })
+    console.error('AI proxy failed', e);
+    res.status(502).json({ error: { code: 'AI_UNAVAILABLE', message: 'AI service unreachable' } });
   }
-})
+});
+
 
 app.get('/api/activity/:username', (req, res) => {
     const db = load()
