@@ -13,4 +13,3 @@ open_clip_torch==3.1.0
 # PyTorch (CPU wheels for Py3.13)
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.7.1+cpu
-torchvision==0.22.2+cpu
