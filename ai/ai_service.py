@@ -5,9 +5,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List, Tuple, Dict
 from PIL import Image, UnidentifiedImageError
-import requests, io, os, re, json
+import requests, io, os, re, json, concurrent.futures
 import torch
-import concurrent.futures
 
 # -------------------- Env / Config --------------------
 try:
@@ -16,9 +15,11 @@ try:
 except Exception:
     pass
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE    = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
-OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat-v3.1:free")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_BASE    = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1").strip()
+OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-chat-v3.1:free").strip()
+OPENROUTER_REF     = os.getenv("OPENROUTER_REFERRER", "http://localhost:5173").strip()
+OPENROUTER_TITLE   = os.getenv("OPENROUTER_TITLE", "Mini Instagram AI").strip()
 
 # Feature switches
 USE_CLIP           = os.getenv("USE_CLIP", "false").lower() == "true"
@@ -28,30 +29,25 @@ CLIP_DEVICE        = "cuda" if (os.getenv("USE_CUDA","false").lower()=="true" an
 TORCH_THREADS      = int(os.getenv("TORCH_THREADS", "1"))
 USE_CAPTION_RERANK = os.getenv("RERANK_CAPTIONS", "true").lower() == "true"
 
+# HF
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
-
-# Default HF endpoints (override via env if you want)
 HF_OBJECTS_ENDPOINT = os.getenv(
     "HF_OBJECTS_ENDPOINT",
-    # object detection (works; supports image/jpeg)
     "https://api-inference.huggingface.co/models/facebook/detr-resnet-50"
 ).strip()
-
-HF_SCENE_ENDPOINT = os.getenv(
-    "HF_SCENE_ENDPOINT",
-    # scene classifier (works; Places365 label set)
-    "https://api-inference.huggingface.co/models/nateraw/vit-base-patch16-224-places365"
-).strip()
+# Keep scenes optional; we also have a local derivation fallback
+HF_SCENE_ENDPOINT = os.getenv("HF_SCENE_ENDPOINT", "").strip()
 
 torch.set_num_threads(TORCH_THREADS)
 torch.set_grad_enabled(False)
 
-print(f"[config] USE_CLIP={USE_CLIP} "
-      f"HF_OBJECTS_ENDPOINT={HF_OBJECTS_ENDPOINT} "
-      f"HF_SCENE_ENDPOINT={HF_SCENE_ENDPOINT}")
+print("[config] USE_CLIP=", USE_CLIP)
+print("[config] HF_OBJECTS_ENDPOINT=", HF_OBJECTS_ENDPOINT)
+print("[config] HF_SCENE_ENDPOINT=", HF_SCENE_ENDPOINT or "(disabled)")
+print("[config] OPENROUTER_API_KEY set? ", bool(OPENROUTER_API_KEY))
 
 # -------------------- App --------------------
-app = FastAPI(title="PhotoFeed AI (robust)", version="1.6")
+app = FastAPI(title="PhotoFeed AI", version="1.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -93,6 +89,7 @@ def _init_clip():
     oc = _try_import_open_clip()
     if oc is None:
         _clip_error, _clip_ready = "open_clip import failed", False
+        print("[clip] import failed: module not available")
         return
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
@@ -189,7 +186,7 @@ def _img_to_jpeg_bytes(img: Image.Image, max_side=256, quality=85) -> bytes:
     return buf.getvalue()
 
 def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
-    """DETR object words; send as image/jpeg (400s if octet-stream)."""
+    """Remote DETR object words. Use image/jpeg to avoid 400 'octet-stream not supported'."""
     if not HF_TOKEN or not HF_OBJECTS_ENDPOINT:
         print("[hf_object_labels] skipped (missing HF token or endpoint)")
         return []
@@ -200,17 +197,15 @@ def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
             headers={
                 "Authorization": f"Bearer {HF_TOKEN}",
                 "Content-Type": "image/jpeg",
-                "Accept": "application/json",
             },
             data=payload,
-            timeout=20
+            timeout=30,
         )
         if r.status_code >= 400:
             print(f"[hf_object_labels] HTTP {r.status_code}: {r.text[:300]}")
         r.raise_for_status()
         preds = r.json()
         labels: List[str] = []
-        # DETR returns a list of dicts with "label"
         if isinstance(preds, list):
             for p in preds:
                 lbl = str(p.get("label", "")).strip().lower()
@@ -225,7 +220,10 @@ def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
         return []
 
 def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
-    """Places365 classifier (nateraw/*). Send as image/jpeg."""
+    """
+    Optional remote scene labels (image-classification). If no endpoint or 4xx/5xx, return [].
+    We also have a local derivation fallback, so this can be disabled entirely.
+    """
     if not HF_TOKEN or not HF_SCENE_ENDPOINT:
         print("[hf_scene_labels] skipped (missing HF token or endpoint)")
         return []
@@ -236,10 +234,9 @@ def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
             headers={
                 "Authorization": f"Bearer {HF_TOKEN}",
                 "Content-Type": "image/jpeg",
-                "Accept": "application/json",
             },
             data=payload,
-            timeout=20
+            timeout=30,
         )
         if r.status_code >= 400:
             print(f"[hf_scene_labels] HTTP {r.status_code}: {r.text[:300]}")
@@ -247,7 +244,6 @@ def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
         preds = r.json()
         labels: List[str] = []
         if isinstance(preds, list):
-            # classifier returns list of {label, score}
             for p in preds[:top_k]:
                 lbl = str(p.get("label", "")).split(",")[0].strip().lower()
                 if lbl and lbl not in labels:
@@ -257,6 +253,38 @@ def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
     except Exception as e:
         print(f"[hf_scene_labels] failed: {e}")
         return []
+
+# Lightweight scene derivation when remote classifier is unavailable
+SCENE_RULES = [
+    ("beach", "beach"),
+    ("fountain", "city square"),
+    ("bench", "park"),
+    ("tree", "park"),
+    ("bicycle", "street"),
+    ("scooter", "street"),
+    ("church", "church"),
+    ("cathedral", "church"),
+    ("book", "library"),
+    ("coffee", "cafe"),
+    ("cafe", "cafe"),
+    ("bridge", "bridge"),
+    ("water", "waterfront"),
+    ("boat", "waterfront"),
+    ("museum", "museum"),
+    ("temple", "temple"),
+]
+
+def derive_scene_labels_from_objects(obj_labels: List[str], max_k=3) -> List[str]:
+    objs = [o.lower() for o in obj_labels]
+    out, seen = [], set()
+    for needle, scene in SCENE_RULES:
+        if any(needle in o for o in objs):
+            if scene not in seen:
+                seen.add(scene); out.append(scene)
+                if len(out) >= max_k: break
+    if not out and any(w in objs for w in ["building","square","plaza","street","sky","cloud"]):
+        out.append("street")
+    return out
 
 # -------------------- Caption utils --------------------
 _STOP = {"a","an","the","and","or","with","in","on","of","to","for","my","me","our","your",
@@ -284,11 +312,9 @@ def clean_caption(text: str) -> str:
 def safe_grounding_from_url(url: str) -> Optional[str]:
     name = os.path.basename(url).split("?")[0].lower()
     toks = re.findall(r"[a-z]{3,}", name)
-    DROP = {
-        "image","img","photo","picture","pic","file","upload","final","edit","share",
-        "dreamstime","thumbs","close","up","b","jpg","jpeg","png","webp","size","resolution",
-        "stock","royalty","free","model","copyspace","girl","boy","man","woman","people"
-    }
+    DROP = {"image","img","photo","picture","pic","file","upload","final","edit","share",
+            "dreamstime","thumbs","close","up","b","jpg","jpeg","png","webp","size","resolution",
+            "stock","royalty","free","model","copyspace","girl","boy","man","woman","people"}
     keep = [t for t in toks if t not in DROP]
     PRIORITY = {"fountain","plaza","square","italy","rome","florence","venice","street",
                 "city","old","town","hat","dress","polka","dots","summer","travel"}
@@ -297,8 +323,8 @@ def safe_grounding_from_url(url: str) -> Optional[str]:
     phrase = " ".join(keep).strip()
     return phrase or None
 
-def build_hashtags(objects: List[str], scenes: List[str], url_hint: str, vibe: Optional[str]) -> List[str]:
-    """Prioritize detected labels + vibe; avoid file ext & random URL bits."""
+def build_hashtags(objects: List[str], scenes: List[str], vibe: Optional[str]) -> List[str]:
+    """On-topic tags from labels + vibe only (no URL junk)."""
     seeds: List[str] = []
     seeds += objects[:3]
     seeds += scenes[:3]
@@ -309,8 +335,7 @@ def build_hashtags(objects: List[str], scenes: List[str], url_hint: str, vibe: O
         tag = "#" + re.sub(r"[^a-z0-9]+","-", str(s).lower()).strip("-")
         if len(tag) > 1 and tag not in seen:
             seen.add(tag); out.append(tag)
-    defaults = ["#soft-light", "#street-moment", "#daily-notes"]
-    for d in defaults:
+    for d in ["#soft-light", "#street-moment", "#daily-notes"]:
         if len(out) >= 6: break
         if d not in out: out.append(d)
     return out[:6]
@@ -346,7 +371,6 @@ def blind_caption_templates(hint: str) -> List[str]:
     ]
 
 def _clean_hashtags(candidates: List[str], allowed_terms: List[str]) -> List[str]:
-    """Keep only tasteful, on-topic tags. Force kebab-case & dedupe."""
     allow = set([t.strip("-") for t in allowed_terms if t])
     out, seen = [], set()
     for t in candidates or []:
@@ -362,7 +386,7 @@ def _clean_hashtags(candidates: List[str], allowed_terms: List[str]) -> List[str
         if len(out) >= 8: break
     return out
 
-# -------------------- LLM (DeepSeek via OpenRouter) --------------------
+# -------------------- LLM (OpenRouter) --------------------
 def call_llm_captions(
     grounding: str,
     vibe: Optional[str],
@@ -381,7 +405,6 @@ def call_llm_captions(
                 allow_terms.add(w)
     allow_terms.update({"soft","light","golden","hour","street","moment","quiet","hours","vintage","film","retro","cozy"})
 
-    # Prompt
     vibe_short = sanitize_vibe(vibe or "")
     system = (
         "You are a concise Instagram caption writer.\n"
@@ -412,8 +435,8 @@ def call_llm_captions(
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": os.getenv("OPENROUTER_REFERRER","http://localhost:5173"),
-        "X-Title": os.getenv("OPENROUTER_TITLE","Mini Instagram AI"),
+        "HTTP-Referer": OPENROUTER_REF,
+        "X-Title": OPENROUTER_TITLE,
     }
     payload = {
         "model": OPENROUTER_MODEL,
@@ -442,20 +465,20 @@ def call_llm_captions(
 
     try:
         if not OPENROUTER_API_KEY:
-            print("[call_llm_captions] OPENROUTER_API_KEY missing -> using offline fallback")
+            print("[call_llm_captions] OpenRouter key missing: using offline fallback")
             base = clean_caption(grounding) or "Captured the moment."
             caps = [
                 base,
                 (objs[0] + " in " + (scns[0] if scns else "soft light")).title() if objs else base,
                 ("Quiet " + (scns[0] if scns else "street")).title(),
-                "Soft light and stone",
+                "Soft light and stone"
             ]
             tags = _clean_hashtags([*(objs[:2] or []), *(scns[:2] or [])], list(allow_terms))
             return {"captions": _post_caps(caps), "hashtags": tags}
 
         r = requests.post(f"{OPENROUTER_BASE}/chat/completions", headers=headers, json=payload, timeout=45)
         if r.status_code == 401:
-            print(f"[call_llm_captions] OpenRouter 401 Unauthorized. Check OPENROUTER_API_KEY.")
+            print("[call_llm_captions] OpenRouter 401 Unauthorized. Check OPENROUTER_API_KEY.")
         r.raise_for_status()
         data = r.json()
         text = data["choices"][0]["message"]["content"]
@@ -472,7 +495,6 @@ def call_llm_captions(
         llm_tags = obj.get("hashtags") or []
         hashtags = _clean_hashtags(llm_tags, list(allow_terms))
         return {"captions": caps or [clean_caption(grounding) or "A quiet moment"], "hashtags": hashtags}
-
     except Exception as e:
         print(f"[call_llm_captions] failed: {e}")
         base = clean_caption(grounding) or "A quiet moment"
@@ -484,7 +506,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Flashgram-AI/1.4 (+https://example.com)"})
+_session.headers.update({"User-Agent": "Flashgram-AI/1.6 (+https://example.com)"})
 _retry = Retry(
     total=2, connect=2, read=2,
     backoff_factor=0.6,
@@ -536,12 +558,11 @@ def health():
             "rerank": USE_CAPTION_RERANK,
             "ready": _clip_ready,
             "error": _clip_error,
-            "last_event": globals().get("_clip_last_event", "n/a"),
         },
         "hf": {
             "has_token": bool(HF_TOKEN),
             "objects_endpoint": HF_OBJECTS_ENDPOINT,
-            "scenes_endpoint": HF_SCENE_ENDPOINT,
+            "scenes_endpoint": HF_SCENE_ENDPOINT or "(disabled)",
         },
         "llm": {"has_key": bool(OPENROUTER_API_KEY), "model": OPENROUTER_MODEL},
     }
@@ -559,6 +580,7 @@ def analyze(req: AnalyzeReq):
     obj_pairs: List[Tuple[str, float]] = []
     scn_pairs: List[Tuple[str, float]] = []
 
+    # CLIP path
     if USE_CLIP:
         _init_clip()
         if _clip_ready:
@@ -566,10 +588,15 @@ def analyze(req: AnalyzeReq):
             obj_pairs = _rank_labels(img, OBJECT_LABELS, template="a photo of {}")[:k]
             scn_pairs = _rank_labels(img, SCENE_LABELS, template="a {} scene")[:k]
 
-    # Fallback to HF if CLIP missing/unready or produced nothing
+    # HF fallback if CLIP missing/unready or produced nothing
     if not obj_pairs and not scn_pairs:
         obj_labels = hf_object_labels(img, top_k=min(5, req.top_k))
-        scn_labels = hf_scene_labels(img, top_k=min(3, req.top_k))
+        scn_labels = []
+        if HF_SCENE_ENDPOINT:
+            scn_labels = hf_scene_labels(img, top_k=min(3, req.top_k))
+        if not scn_labels:
+            # local derivation from objects
+            scn_labels = derive_scene_labels_from_objects(obj_labels, max_k=min(3, req.top_k))
         obj_pairs = [(o, 0.0) for o in obj_labels]
         scn_pairs = [(s, 0.0) for s in scn_labels]
         if not obj_pairs and not scn_pairs:
@@ -602,11 +629,15 @@ def suggest(req: SuggestReq):
 
     if img is not None and (not obj_pairs and not scn_pairs):
         obj_labels = hf_object_labels(img, top_k=min(5, req.top_k))
-        scn_labels = hf_scene_labels(img, top_k=min(3, req.top_k))
+        scn_labels = []
+        if HF_SCENE_ENDPOINT:
+            scn_labels = hf_scene_labels(img, top_k=min(3, req.top_k))
+        if not scn_labels:
+            scn_labels = derive_scene_labels_from_objects(obj_labels, max_k=min(3, req.top_k))
         obj_pairs = [(o, 0.0) for o in obj_labels]
         scn_pairs = [(s, 0.0) for s in scn_labels]
 
-    # 3) Build grounding phrase
+    # 3) Build a clean grounding phrase
     analysis = {
         "objects": [{"label": l, "score": float(s)} for l, s in obj_pairs],
         "scenes":  [{"label": l, "score": float(s)} for l, s in scn_pairs],
@@ -649,8 +680,7 @@ def suggest(req: SuggestReq):
     # 5) Hashtags
     hashtags = out.get("hashtags") or []
     if len(hashtags) < 3:
-        url_hint = os.path.basename((req.imageUrl or "").split("?")[0])
-        hashtags = build_hashtags(obj_labels, scn_labels, url_hint, req.prompt)
+        hashtags = build_hashtags(obj_labels, scn_labels, req.prompt)
     print(f"[suggest] hashtags: {hashtags}")
 
     # 6) Optional CLIP re-rank
