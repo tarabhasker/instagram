@@ -649,9 +649,18 @@ def suggest(req: SuggestReq):
         n_variants=max(1, min(5, req.n_variants)),
     )
 
-    print(f"[suggest] LLM captions: {captions}")
-    print(f"[suggest] Hashtags: {hashtags}")
+    captions = out.get("captions") or []
+    if not captions:
+        captions = blind_caption_templates(grounding)
 
+    print(f"[suggest] LLM captions: {captions}")   # <-- safe now
+
+    hashtags = out.get("hashtags") or []
+    if len(hashtags) < 3:
+        url_hint = os.path.basename((req.imageUrl or "").split("?")[0])
+        hashtags = build_hashtags(obj_labels, scn_labels, url_hint, req.prompt)
+
+    print(f"[suggest] hashtags: {hashtags}")
 
     captions = out.get("captions") or []
     if not captions:
