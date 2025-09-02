@@ -33,11 +33,14 @@ HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 # Default HF endpoints (override via env if you want)
 HF_OBJECTS_ENDPOINT = os.getenv(
     "HF_OBJECTS_ENDPOINT",
+    # object detection (works; supports image/jpeg)
     "https://api-inference.huggingface.co/models/facebook/detr-resnet-50"
 ).strip()
+
 HF_SCENE_ENDPOINT = os.getenv(
     "HF_SCENE_ENDPOINT",
-    "https://api-inference.huggingface.co/models/google/vit-base-patch16-224"
+    # scene classifier (works; Places365 label set)
+    "https://api-inference.huggingface.co/models/nateraw/vit-base-patch16-224-places365"
 ).strip()
 
 torch.set_num_threads(TORCH_THREADS)
@@ -48,7 +51,7 @@ print(f"[config] USE_CLIP={USE_CLIP} "
       f"HF_SCENE_ENDPOINT={HF_SCENE_ENDPOINT}")
 
 # -------------------- App --------------------
-app = FastAPI(title="PhotoFeed AI (robust)", version="1.5")
+app = FastAPI(title="PhotoFeed AI (robust)", version="1.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -186,7 +189,7 @@ def _img_to_jpeg_bytes(img: Image.Image, max_side=256, quality=85) -> bytes:
     return buf.getvalue()
 
 def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
-    """Remote DETR object words; raw bytes body (octet-stream)."""
+    """DETR object words; send as image/jpeg (400s if octet-stream)."""
     if not HF_TOKEN or not HF_OBJECTS_ENDPOINT:
         print("[hf_object_labels] skipped (missing HF token or endpoint)")
         return []
@@ -196,7 +199,8 @@ def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
             HF_OBJECTS_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {HF_TOKEN}",
-                "Content-Type": "application/octet-stream",
+                "Content-Type": "image/jpeg",
+                "Accept": "application/json",
             },
             data=payload,
             timeout=20
@@ -206,6 +210,7 @@ def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
         r.raise_for_status()
         preds = r.json()
         labels: List[str] = []
+        # DETR returns a list of dicts with "label"
         if isinstance(preds, list):
             for p in preds:
                 lbl = str(p.get("label", "")).strip().lower()
@@ -220,7 +225,7 @@ def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
         return []
 
 def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
-    """Remote ViT image-classification labels; raw bytes body."""
+    """Places365 classifier (nateraw/*). Send as image/jpeg."""
     if not HF_TOKEN or not HF_SCENE_ENDPOINT:
         print("[hf_scene_labels] skipped (missing HF token or endpoint)")
         return []
@@ -230,7 +235,8 @@ def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
             HF_SCENE_ENDPOINT,
             headers={
                 "Authorization": f"Bearer {HF_TOKEN}",
-                "Content-Type": "application/octet-stream",
+                "Content-Type": "image/jpeg",
+                "Accept": "application/json",
             },
             data=payload,
             timeout=20
@@ -241,6 +247,7 @@ def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
         preds = r.json()
         labels: List[str] = []
         if isinstance(preds, list):
+            # classifier returns list of {label, score}
             for p in preds[:top_k]:
                 lbl = str(p.get("label", "")).split(",")[0].strip().lower()
                 if lbl and lbl not in labels:
@@ -423,7 +430,7 @@ def call_llm_captions(
         for c in (caps or []):
             if not c: continue
             c = clean_caption(c)
-            c = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c, flags=re.I)  # dedupe immediate repeats
+            c = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", c, flags=re.I)
             words = _norm_words(c)
             if not words: continue
             if (len(words) <= 3) and any(w in _GENERIC for w in words):
@@ -431,22 +438,24 @@ def call_llm_captions(
             k = c.strip().lower()
             if k in seen: continue
             seen.add(k); out.append(c)
-        # respect n_variants
         return out[:max(1, n_variants)]
 
     try:
         if not OPENROUTER_API_KEY:
+            print("[call_llm_captions] OPENROUTER_API_KEY missing -> using offline fallback")
             base = clean_caption(grounding) or "Captured the moment."
             caps = [
                 base,
                 (objs[0] + " in " + (scns[0] if scns else "soft light")).title() if objs else base,
                 ("Quiet " + (scns[0] if scns else "street")).title(),
-                "Soft light and stone"
+                "Soft light and stone",
             ]
             tags = _clean_hashtags([*(objs[:2] or []), *(scns[:2] or [])], list(allow_terms))
             return {"captions": _post_caps(caps), "hashtags": tags}
 
         r = requests.post(f"{OPENROUTER_BASE}/chat/completions", headers=headers, json=payload, timeout=45)
+        if r.status_code == 401:
+            print(f"[call_llm_captions] OpenRouter 401 Unauthorized. Check OPENROUTER_API_KEY.")
         r.raise_for_status()
         data = r.json()
         text = data["choices"][0]["message"]["content"]
@@ -462,10 +471,8 @@ def call_llm_captions(
 
         llm_tags = obj.get("hashtags") or []
         hashtags = _clean_hashtags(llm_tags, list(allow_terms))
-        return {
-            "captions": caps or [clean_caption(grounding) or "A quiet moment"],
-            "hashtags": hashtags
-        }
+        return {"captions": caps or [clean_caption(grounding) or "A quiet moment"], "hashtags": hashtags}
+
     except Exception as e:
         print(f"[call_llm_captions] failed: {e}")
         base = clean_caption(grounding) or "A quiet moment"
