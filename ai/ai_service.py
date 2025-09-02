@@ -34,22 +34,6 @@ HF_SCENE_ENDPOINT  = os.getenv("HF_SCENE_ENDPOINT", "https://api-inference.huggi
 torch.set_num_threads(TORCH_THREADS)
 torch.set_grad_enabled(False)
 
-# ---- Preload/cache for CLIP on serverless cold starts ----
-os.environ.setdefault("OPENCLIP_CACHE_DIR", "/tmp/open_clip_cache")
-os.environ.setdefault("TORCH_HOME", "/tmp/torch")
-
-try:
-    import open_clip  # noqa
-    # Touch the weights once so first user request doesn't download them
-    _m, _, _ = open_clip.create_model_and_transforms(
-        os.getenv("CLIP_MODEL_NAME", "RN50"),
-        pretrained=os.getenv("CLIP_PRETRAINED", "openai")
-    )
-    print("[startup] CLIP weights preloaded")
-except Exception as e:
-    print("[startup] CLIP preload skipped:", e)
-
-
 # -------------------- App --------------------
 app = FastAPI(title="PhotoFeed AI (robust)", version="1.3")
 
