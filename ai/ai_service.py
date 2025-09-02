@@ -469,9 +469,8 @@ class SuggestReq(BaseModel):
 # -------------------- Router --------------------
 api = APIRouter(prefix="/api")
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
-    # No CLIP init here (fast & safe)
     return {
         "ok": True,
         "clip": {
@@ -483,6 +482,7 @@ def health():
             "rerank": USE_CAPTION_RERANK,
             "ready": _clip_ready,
             "error": _clip_error,
+            "last_event": globals().get("_clip_last_event", "n/a"),
         },
         "hf": {"enabled": USE_HF_SCENES, "has_token": bool(HF_TOKEN)},
         "llm": {"has_key": bool(OPENROUTER_API_KEY), "model": OPENROUTER_MODEL},
