@@ -66,31 +66,52 @@ def _try_import_open_clip():
     except Exception:
         return None
 
+import concurrent.futures
+
 def _init_clip():
-    """Never block startup. If CLIP is disabled or unavailable, mark not ready and return quickly."""
+    """Try to init CLIP once, but never block the request for too long."""
     global _clip_model, _clip_preprocess, _clip_tokenizer, _clip_ready, _clip_error
     if not USE_CLIP:
         _clip_ready, _clip_error = False, "CLIP disabled by USE_CLIP=false"
         return
     if _clip_ready or _clip_model is not None:
         return
+
     oc = _try_import_open_clip()
     if oc is None:
         _clip_error, _clip_ready = "open_clip import failed", False
         return
+
     try:
-        model, _, preprocess = oc.create_model_and_transforms(CLIP_MODEL_NAME, pretrained=CLIP_PRETRAINED)
+        # Run CLIP init with a timeout so it doesn't hang the request forever
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(
+                lambda: oc.create_model_and_transforms(
+                    CLIP_MODEL_NAME,
+                    pretrained=CLIP_PRETRAINED,
+                    cache_dir=os.getenv("OPENCLIP_CACHE_DIR", "/tmp/open_clip_cache")
+                )
+            )
+            model, _, preprocess = fut.result(timeout=8)  # seconds
+
         model.eval()
         model.to(CLIP_DEVICE)
         if CLIP_DEVICE == "cuda":
             model.half()
+
         _clip_model = model
         _clip_preprocess = preprocess
         _clip_tokenizer = oc.get_tokenizer(CLIP_MODEL_NAME)
         _clip_ready = True
+        print(f"[clip] loaded {CLIP_MODEL_NAME} on {CLIP_DEVICE}")
+
+    except concurrent.futures.TimeoutError:
+        _clip_error, _clip_ready = "CLIP init timeout (>8s)", False
+        print("[clip] init timed out (skipping)")
     except Exception as e:
-        # Do NOT crash request; just mark unavailable.
-        _clip_error, _clip_ready = str(e), False
+        _clip_error, _clip_ready = f"CLIP init failed: {e}", False
+        print("[clip] init failed:", e)
+
 
 OBJECT_LABELS = [
     "person","hat","straw hat","dress","polka dot dress","sunglasses","smile","fountain",
