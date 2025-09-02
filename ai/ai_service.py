@@ -181,33 +181,38 @@ def _img_to_jpeg_bytes(img: Image.Image, max_side=256, quality=85) -> bytes:
     img.save(buf, format="JPEG", quality=quality, optimize=True)
     return buf.getvalue()
 
+HF_SCENE_ENDPOINT = os.getenv(
+    "HF_SCENE_ENDPOINT",
+    "https://api-inference.huggingface.co/models/google/vit-base-patch16-224"
+).strip()
+
 def hf_scene_labels(img: Image.Image, top_k=3) -> List[str]:
-    if not USE_HF_SCENES or not HF_TOKEN or not HF_SCENE_ENDPOINT:
+    if not HF_TOKEN or not HF_SCENE_ENDPOINT:
         print("[hf_scene_labels] skipped (disabled or missing creds)")
         return []
     try:
-        payload = _img_to_jpeg_bytes(img, max_side=256)
+        payload = _img_to_jpeg_bytes(img, max_side=224)
+        files = {"file": ("image.jpg", payload, "image/jpeg")}
         r = requests.post(
             HF_SCENE_ENDPOINT,
             headers={"Authorization": f"Bearer {HF_TOKEN}"},
-            data=payload,
+            files=files,
             timeout=12
         )
         r.raise_for_status()
         preds = r.json()
+        labels: List[str] = []
         if isinstance(preds, list):
-            labs = []
             for p in preds[:top_k]:
-                lbl = str(p.get("label","")).split(",")[0].strip().lower()
-                if lbl:
-                    labs.append(lbl)
-            print(f"[hf_scene_labels] detected: {labs}")
-            return labs
-        print("[hf_scene_labels] no labels returned")
-        return []
+                lbl = str(p.get("label", "")).split(",")[0].strip().lower()
+                if lbl and lbl not in labels:
+                    labels.append(re.sub(r"[^a-z0-9\- ]+", "", lbl))
+        print(f"[hf_scene_labels] detected: {labels}")
+        return labels
     except Exception as e:
         print(f"[hf_scene_labels] failed: {e}")
         return []
+
 
 # -------------------- Caption utils --------------------
 _STOP = {"a","an","the","and","or","with","in","on","of","to","for","my","me","our","your","we","us","you","his","her","their","at","by","from","as"}
@@ -310,16 +315,16 @@ HF_OBJECTS_ENDPOINT = os.getenv(
 ).strip()
 
 def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
-    """Return simple object words using remote DETR; no boxes, just labels."""
     if not HF_TOKEN or not HF_OBJECTS_ENDPOINT:
         print("[hf_object_labels] skipped (missing HF token or endpoint)")
         return []
     try:
-        payload = _img_to_jpeg_bytes(img, max_side=320)  # small, fast
+        payload = _img_to_jpeg_bytes(img, max_side=320)
+        files = {"file": ("image.jpg", payload, "image/jpeg")}
         r = requests.post(
             HF_OBJECTS_ENDPOINT,
             headers={"Authorization": f"Bearer {HF_TOKEN}"},
-            data=payload,
+            files=files,
             timeout=12
         )
         r.raise_for_status()
@@ -327,17 +332,15 @@ def hf_object_labels(img: Image.Image, top_k=5) -> List[str]:
         labels: List[str] = []
         if isinstance(preds, list):
             for p in preds:
-                lbl = str(p.get("label","")).strip().lower()
-                if not lbl:
-                    continue
-                lbl = re.sub(r"[^a-z0-9\- ]+","", lbl)
+                lbl = str(p.get("label", "")).strip().lower()
                 if lbl and lbl not in labels:
-                    labels.append(lbl)
+                    labels.append(re.sub(r"[^a-z0-9\- ]+", "", lbl))
         print(f"[hf_object_labels] detected: {labels}")
         return labels[:top_k]
     except Exception as e:
         print(f"[hf_object_labels] failed: {e}")
         return []
+
 
 # -------------------- caption prompt + filters (tight) --------------------
 _GENERIC = {"nice","beautiful","amazing","cool","awesome","great","pretty","lovely"}
