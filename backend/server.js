@@ -1,12 +1,10 @@
 // server.js
-// Flashgram demo API (ESM). Node 18+ recommended.
-
 import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
 import fs from 'fs'
 import path from 'path'
-import fetch from 'node-fetch' // if Node >=18 you can use global fetch
+import fetch from 'node-fetch' 
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 
