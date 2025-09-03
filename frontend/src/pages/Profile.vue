@@ -98,10 +98,12 @@
 
                 <!-- Actions (hide on your own profile) -->
                 <div class="flex items-center gap-2" v-if="!isOwnProfile">
+                  <!-- Follow/Unfollow -->
                   <button
                     class="group relative overflow-hidden rounded-xl px-4 py-2 text-sm font-medium text-black bg-[#e4ae87] hover:bg-[#daa8ae] transition active:scale-[.98] will-change-transform"
+                    @click="toggleFollow"
                   >
-                    <span class="relative z-10">Follow</span>
+                    <span class="relative z-10">{{ isFollowing ? 'Unfollow' : 'Follow' }}</span>
                     <span class="absolute inset-0 -z-0 opacity-0 group-hover:opacity-100 transition"
                           style="background: radial-gradient(80% 80% at 50% 0%, #e4ae8722, transparent 60%);"></span>
                   </button>
@@ -442,6 +444,37 @@ async function loadCollections (username) {
     loadingPosts.value = false; loadingLiked.value = false; loadingSaved.value = false
   }
 }
+
+/* ---- follow state ---- */
+const isFollowing = computed(() => {
+  if (!sessionUser.value?.username || !user.value) return false;
+  return (sessionUser.value.following || []).includes(user.value.username);
+});
+
+async function toggleFollow() {
+  if (!sessionUser.value?.username || !user.value?.username) {
+    alert("You must be logged in.");
+    return;
+  }
+  try {
+    const r = await fetchJSON(`/api/users/${encodeURIComponent(user.value.username)}/follow`, {
+      method: 'POST',
+      body: JSON.stringify({ username: sessionUser.value.username }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    // update local state
+    user.value.followers = r.followers;
+    const stored = JSON.parse(localStorage.getItem('fg.user') || '{}');
+    stored.following = r.following;
+    localStorage.setItem('fg.user', JSON.stringify(stored));
+    sessionUser.value = stored;
+  } catch (e) {
+    console.error(e);
+    alert("Failed to update follow status.");
+  }
+}
+
 
 /* ---- Avatar modal / save ---- */
 const avatarModal = ref({ open: false, url: '', saving: false, error: null })

@@ -289,7 +289,12 @@
             <ul class="grid gap-2">
               <li><button class="opt-row" @click="copyLink"><span>Copy link</span></button></li>
               <li><button class="opt-row" @click="openAuthor"><span>View profile</span></button></li>
-              <li><button class="opt-row"><span>Mute this user</span></button></li>
+              <li v-if="post?.user?.username === currentUsername">
+                <button class="opt-row text-red-300" @click="deletePost"><span>Delete post</span></button>
+              </li>
+              <li v-else>
+                <button class="opt-row"><span>Mute this user</span></button>
+              </li>
               <li><button class="opt-row text-red-300"><span>Report</span></button></li>
             </ul>
           </div>
@@ -442,6 +447,26 @@ const toggleLike = async () => {
     post.value.likes = had ? [...post.value.likes, user] : post.value.likes.filter(u => u !== user)
   }
 }
+
+const deletePost = async () => {
+  if (!post.value) return;
+  const confirmed = confirm("Are you sure you want to delete this post?");
+  if (!confirmed) return;
+  try {
+    await fetchJSON(`/api/posts/${encodeURIComponent(post.value.id)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ username: currentUsername.value }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+    closeSheet();
+    alert("Post deleted.");
+    router.push(`/@${currentUsername.value}`); // redirect to profile
+  } catch (e) {
+    alert("Failed to delete post.");
+    console.error(e);
+  }
+};
+
 
 const toggleSave = async () => {
   if (!post.value) return

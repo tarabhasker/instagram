@@ -258,6 +258,39 @@ app.post('/api/posts', (req, res) => {
   res.status(201).json(post)
 })
 
+// Delete a post
+app.delete('/api/posts/:id', (req, res) => {
+  const { username } = req.body || {};
+  if (!username) {
+    return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'username required' } });
+  }
+
+  const db = load();
+  const idx = (db.posts || []).findIndex(x => x.id === req.params.id);
+  if (idx < 0) {
+    return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Post not found' } });
+  }
+  const post = db.posts[idx];
+
+  // Only allow author to delete
+  if (post.user?.username !== username) {
+    return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'not your post' } });
+  }
+
+  // Remove post
+  db.posts.splice(idx, 1);
+
+  // Remove from user.posts array
+  const u = db.users?.find(x => x.username === username);
+  if (u && Array.isArray(u.posts)) {
+    u.posts = u.posts.filter(id => id !== req.params.id);
+  }
+
+  save(db);
+  res.json({ ok: true, id: req.params.id });
+});
+
+
 
 
 /* --------- Likes / Saves (toggle + mirror to user doc) ---------- */
@@ -464,6 +497,51 @@ app.get('/api/users/:username/saved', (req, res) => {
     .filter((p) => p.saves.includes(req.params.username))
   res.json(items)
 })
+
+/* ------------------------- Follow / Unfollow ------------------------- */
+
+// Toggle follow
+app.post('/api/users/:username/follow', (req, res) => {
+  const target = req.params.username;
+  const { username } = req.body || {}; // acting user
+
+  if (!username) {
+    return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'username required' } });
+  }
+  if (username === target) {
+    return res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'cannot follow yourself' } });
+  }
+
+  const db = load();
+  const me = db.users.find(u => u.username === username);
+  const them = db.users.find(u => u.username === target);
+  if (!me || !them) {
+    return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'user not found' } });
+  }
+
+  me.following = Array.isArray(me.following) ? me.following : [];
+  them.followers = Array.isArray(them.followers) ? them.followers : [];
+
+  const isFollowing = me.following.includes(target);
+
+  if (isFollowing) {
+    me.following = me.following.filter(u => u !== target);
+    them.followers = them.followers.filter(u => u !== username);
+  } else {
+    me.following.unshift(target);
+    them.followers.unshift(username);
+  }
+
+  save(db);
+
+  res.json({
+    ok: true,
+    following: me.following,
+    followers: them.followers,
+    isFollowing: !isFollowing
+  });
+});
+
 
 /* ----------------------------- AI Proxy -------------------------- */
 
